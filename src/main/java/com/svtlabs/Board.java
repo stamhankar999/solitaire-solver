@@ -18,8 +18,7 @@ public class Board implements Iterable<Board> {
     this(state, level, null);
   }
 
-  private Board(BitSet state, int level, Board parent)
-  {
+  private Board(BitSet state, int level, Board parent) {
     this.state = state;
     this.level = level;
     this.parent = parent;
@@ -92,7 +91,11 @@ public class Board implements Iterable<Board> {
         }
 
         List<Move> possibleMoves = MoveHelper.MOVES.get(pos);
-        moves = possibleMoves.stream().filter(m -> state.get(m.getOver()) && !state.get(m.getTo())).collect(Collectors.toList());
+        moves =
+            possibleMoves
+                .stream()
+                .filter(m -> state.get(m.getOver()) && !state.get(m.getTo()))
+                .collect(Collectors.toList());
         if (!moves.isEmpty()) {
           moveIterator = moves.iterator();
           return true;

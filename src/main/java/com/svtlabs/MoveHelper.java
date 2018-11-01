@@ -5,16 +5,7 @@ import java.util.List;
 
 public class MoveHelper {
   static List<List<Move>> MOVES = new ArrayList<>(37);
-  private static int[] ROW_LENGTHS = {
-      3,
-      5,
-      7,
-      7,
-      7,
-      5,
-      3,
-      99
-  };
+  private static int[] ROW_LENGTHS = {3, 5, 7, 7, 7, 5, 3, 99};
 
   static {
     // Populate MOVES

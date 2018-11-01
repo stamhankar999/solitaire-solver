@@ -4,8 +4,7 @@ import java.awt.*;
 import java.util.BitSet;
 import javax.swing.*;
 
-public class SolitaireBoard extends JFrame
-{
+public class SolitaireBoard extends JFrame {
   static int SIZE = 22;
   private final BitSet state;
 
@@ -17,11 +16,11 @@ public class SolitaireBoard extends JFrame
     setDefaultCloseOperation(DISPOSE_ON_CLOSE);
   }
 
-  @Override public void paint(Graphics g)
-  {
+  @Override
+  public void paint(Graphics g) {
     super.paint(g);
     int pos = 0;
-    for (int row = 0;  row < 7;  row++ ) {
+    for (int row = 0; row < 7; row++) {
       int colStart;
       int colEnd;
       if (row < 2) {
@@ -38,7 +37,7 @@ public class SolitaireBoard extends JFrame
       for (int col = colStart; col <= colEnd; ++col) {
         int x = col * SIZE;
         int y = (row + 2) * SIZE;
-//        g.drawString(String.format("%d", pos++),x, y);
+        //        g.drawString(String.format("%d", pos++),x, y);
         if (state.get(pos++)) {
           g.fillOval(x, y, SIZE, SIZE);
         } else {

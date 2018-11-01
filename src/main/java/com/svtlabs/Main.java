@@ -6,13 +6,12 @@ import com.datastax.oss.driver.api.core.cql.BoundStatementBuilder;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.cql.ResultSet;
 import com.datastax.oss.driver.api.core.cql.Row;
-import java.net.InetAddress;
+
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Properties;
@@ -39,16 +38,18 @@ import org.slf4j.LoggerFactory;
  * </pre>
  *
  * <p>The topic should be created like this:
+ *
  * <pre>
  * bin/kafka-topics --zookeeper localhost --create --topic solitaire --partitions 100 --replication-factor 1
  * </pre>
  */
 public class Main {
+
   private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   //  private List<Map<Board, Integer>> seenBoards = new ArrayList<>();
   //  ExecutorService executorService = Executors.newFixedThreadPool(7);
   //  private final ScheduledExecutorService scheduler;
-  private static final String TOPIC = "solitaire20";
+  private static final String TOPIC_BASE = "solitaire";
   private static final String GROUP_ID = "Solitaire";
   private static final String CLIENT_ID = "Solitaire";
   private static final int SLOTS = 37;
@@ -60,8 +61,10 @@ public class Main {
 
   private final CqlSession session;
   private final KafkaProducer<ByteBuffer, ByteBuffer> producer;
-  private final KafkaConsumer<ByteBuffer, ByteBuffer> consumer;
+  private final ConsumerWithTopic<ByteBuffer, ByteBuffer> consumer;
   private final String clientId;
+
+  private int consumeLevel;
 
   private Main(String clientId) throws UnknownHostException {
     this.clientId = clientId;
@@ -84,7 +87,7 @@ public class Main {
 
     // Connect to Kafka and create our producer and consumer objects.
     Properties producerProps = new Properties();
-    producerProps.put("client.id", InetAddress.getLocalHost().getHostName());
+    producerProps.put("client.id", CLIENT_ID);
     producerProps.put("bootstrap.servers", "localhost:9092");
     producerProps.put("retries", "2");
     producerProps.put("acks", "all");
@@ -102,10 +105,7 @@ public class Main {
     //    props.put("max.poll.records", "10");
 
     // Create the consumer using props.
-    consumer = new KafkaConsumer<>(consumerProps);
-
-    // Subscribe to the topic.
-    consumer.subscribe(Collections.singletonList(TOPIC));
+    consumer = new ConsumerWithTopic<>(new KafkaConsumer<>(consumerProps));
 
     //    for (int i = 0; i < SLOTS; ++i) {
     //      seenBoards.add(new ConcurrentHashMap<>());
@@ -120,8 +120,9 @@ public class Main {
     // TODO: If a child is a rotational equivalent of another child, exclude one.
 
     // Check if this state is already stored in C*.
-    ResultSet rs = session.execute(
-        selectStatement.boundStatementBuilder().setByteBuffer("state", state).build());
+    ResultSet rs =
+        session.execute(
+            selectStatement.boundStatementBuilder().setByteBuffer("state", state).build());
     Row one = rs.one();
     if (one != null) {
       // It already exists in C*, but its parents list might not contain the given parent.
@@ -134,7 +135,7 @@ public class Main {
     }
 
     BitSet stateBitSet = BitSet.valueOf(state);
-    Board b = new Board(stateBitSet, 0);
+    Board b = new Board(stateBitSet, consumeLevel);
     Set<ByteBuffer> children = null;
     for (Board child : b) {
       if (children == null) {
@@ -151,27 +152,16 @@ public class Main {
     // this child's parent.
     if (children != null) {
       for (ByteBuffer child : children) {
-        rs = session.execute(
-            selectStatement.boundStatementBuilder().setByteBuffer("state", child).build());
+        rs =
+            session.execute(
+                selectStatement.boundStatementBuilder().setByteBuffer("state", child).build());
         Row row = rs.one();
         if (row == null) {
-//          producer.send(new ProducerRecord<>(TOPIC, child, state));
+          producer.send(
+              new ProducerRecord<>(String.format("%s_%d", TOPIC_BASE, consumeLevel + 1), child,
+                  state));
         } else {
           LOGGER.debug("Child {} already exists in db", BitSet.valueOf(child));
-
-          {
-            SolitaireBoard solitaireBoard =
-                new SolitaireBoard(
-                    "parent1",
-                    BitSet.valueOf(row.getSet("parents", ByteBuffer.class).iterator().next()));
-            solitaireBoard.setLocation(150, 100 + 200 * displayRow);
-            solitaireBoard.setVisible(true);
-          }
-          {
-            SolitaireBoard solitaireBoard = new SolitaireBoard("parent2", stateBitSet);
-            solitaireBoard.setLocation(300, 100 + 200 * displayRow);
-            solitaireBoard.setVisible(true);
-          }
           displayRow++;
           addParent(child, state);
         }
@@ -193,7 +183,7 @@ public class Main {
     KafkaConsumer<ByteBuffer, ByteBuffer> dumpConsumer = new KafkaConsumer<>(consumerProps);
 
     // Subscribe to the topic.
-    dumpConsumer.subscribe(Collections.singletonList(TOPIC));
+    dumpConsumer.subscribe(Collections.singletonList(TOPIC_BASE));
 
     int numTasks = 0;
     int numUniqueTasks = 0;
@@ -218,9 +208,10 @@ public class Main {
 
         if (seen.containsKey(state)) {
           ByteBuffer seenParent = seen.get(state);
-          boolean sameParent = (parent == null && seenParent == null)
-              || (parent != null && parent.equals(seenParent))
-              || (seenParent != null && seenParent.equals(parent));
+          boolean sameParent =
+              (parent == null && seenParent == null)
+                  || (parent != null && parent.equals(seenParent))
+                  || (seenParent != null && seenParent.equals(parent));
 
           if (sameParent) {
             if (parent == null) {
@@ -237,7 +228,14 @@ public class Main {
         }
       }
     }
-    System.out.println(String.format("Total Kakfa records: %d\nUnique tasks: %d\nDups with null parents: %d\nDups with non-null parents: %d\nDups with diff parents: %d", numTasks, numUniqueTasks, numDupsWithNullParents, numDupsWithNonNullParents, numDiffParents));
+    System.out.println(
+        String.format(
+            "Total Kakfa records: %d\nUnique tasks: %d\nDups with null parents: %d\nDups with non-null parents: %d\nDups with diff parents: %d",
+            numTasks,
+            numUniqueTasks,
+            numDupsWithNullParents,
+            numDupsWithNonNullParents,
+            numDiffParents));
   }
 
   public static void main(String[] args) throws UnknownHostException {
@@ -245,8 +243,8 @@ public class Main {
       System.err.println("Usage: solitaire-solver <client-id>");
     }
     Main main = new Main(args[0]);
-//    main.readAndProcessTopic();
-//    main.close();
+    //    main.readAndProcessTopic();
+    //    main.close();
 
     BitSet state = new BitSet(SLOTS);
     state.set(0, SLOTS);
@@ -257,7 +255,9 @@ public class Main {
 
     // Get the ball rolling by pushing a task to Kafka (the initial state of the board)
     if ("ij1".equals(args[0])) {
-      main.producer.send(new ProducerRecord<>(TOPIC, ByteBuffer.wrap(state.toByteArray()), null));
+      main.producer.send(
+          new ProducerRecord<>(TOPIC_BASE + "_1", ByteBuffer.wrap(state.toByteArray()), null));
+      main.consumeLevel = 1;
       main.producer.flush();
     }
 
@@ -266,12 +266,21 @@ public class Main {
     // * Add a row in C* with the current board, its children, and its parent.
     // * For each child, add a task in Kafka.
     int numDups = 0;
-//    for (int ctr = 0; ctr < 10; ++ctr) {
-    while (true) {
+    int processedCount = 0;
+    //    for (int ctr = 0; ctr < 10; ++ctr) {
+    while (processedCount < 1000) {
+      // Subscribe to the topic.
+      main.consumer.subscribe(String.format("%s_%d", TOPIC_BASE, main.consumeLevel));
+
       ConsumerRecords<ByteBuffer, ByteBuffer> tasks = main.consumer.poll(5000);
       if (tasks.isEmpty()) {
-        System.out.println("No work!");
-        break;
+        System.out.printf("Completed level %d!%n", main.consumeLevel);
+        main.consumeLevel++;
+        if (main.consumeLevel == SLOTS) {
+          // Completed last level. We're done!
+          break;
+        }
+        continue;
       }
       for (ConsumerRecord<ByteBuffer, ByteBuffer> task : tasks) {
         ByteBuffer parent = null;
@@ -279,6 +288,7 @@ public class Main {
           parent = task.value();
         }
         numDups = main.processRecord(task.key(), parent, numDups);
+        processedCount++;
       }
     }
     //
@@ -324,6 +334,23 @@ public class Main {
   //    consumerThread.start();
   //  }
 
+  private void renderBoardAncestry(ByteBuffer board, int level) {
+    ResultSet rs =
+        session.execute(
+            selectStatement.boundStatementBuilder().setByteBuffer("state", board).build());
+    Row one = rs.one();
+    assert one != null;
+    Set<ByteBuffer> persistedParents = one.getSet("parents", ByteBuffer.class);
+
+    if (!persistedParents.isEmpty()) {
+      renderBoardAncestry(persistedParents.iterator().next(), level + 1);
+    }
+    BitSet state = BitSet.valueOf(board);
+    SolitaireBoard solitaireBoard = new SolitaireBoard(String.format("sol %d", level), state);
+    solitaireBoard.setLocation(level % 9 * 150, 100 + 200 * (level / 9));
+    solitaireBoard.setVisible(true);
+  }
+
   private void readFromDb() {
     ResultSet result = session.execute("SELECT * FROM solitaire.boards");
     //    BitSet last = null;
@@ -365,8 +392,7 @@ public class Main {
     //    }
   }
 
-  private void sendToCassandra(
-      BitSet state, Set<ByteBuffer> childrenStates, ByteBuffer parent) {
+  private void sendToCassandra(BitSet state, Set<ByteBuffer> childrenStates, ByteBuffer parent) {
     byte level = (byte) (SLOTS - state.cardinality());
     BoundStatementBuilder boundStatementBuilder = insertStatement.boundStatementBuilder();
     ByteBuffer stateBuffer = ByteBuffer.wrap(state.toByteArray());
@@ -393,7 +419,10 @@ public class Main {
         updateParentsStatement
             .boundStatementBuilder()
             .setByteBuffer("state", stateBuffer)
-            .setSet("new_parent", parent == null ? null : Collections.singleton(parent), ByteBuffer.class);
+            .setSet(
+                "new_parent",
+                parent == null ? null : Collections.singleton(parent),
+                ByteBuffer.class);
     session.execute(boundStatementBuilder.build());
   }
 
@@ -403,39 +432,38 @@ public class Main {
         clientMetricsStatement.boundStatementBuilder().setString("client_id", clientId);
     session.executeAsync(boundStatementBuilder.build());
 
-    boundStatementBuilder =
-        levelMetricsStatement.boundStatementBuilder().setByte("level", level);
+    boundStatementBuilder = levelMetricsStatement.boundStatementBuilder().setByte("level", level);
     session.executeAsync(boundStatementBuilder.build());
   }
 
-//  private void traverseChildren(Board b) {
-//    Set<ByteBuffer> parents = new HashSet<>();
-//    if (b.getParent() != null) {
-//      parents.add(ByteBuffer.wrap(b.getParent().getState().toByteArray()));
-//    }
-//    Set<ByteBuffer> childrenStates = new LinkedHashSet<>();
-//    Set<Board> children = new LinkedHashSet<>();
-//
-//    for (Board child : b) {
-//      children.add(child);
-//      childrenStates.add(ByteBuffer.wrap(child.getState().toByteArray()));
-//    }
-//
-//    sendToCassandra(b.getState(), childrenStates, parents);
-//
-//    //    for (Board child : children) {
-//    //      if (child.getLevel() == 29) {
-//    //        executorService.execute(() -> {
-//    //          seenBoards.get(b.getLevel()).put(child, 1);
-//    //          traverseChildren(child);
-//    //        });
-//    //      } else {
-//    //        seenBoards.get(b.getLevel()).put(child, 1);
-//    if (!children.isEmpty()) {
-//      traverseChildren(children.iterator().next());
-//    }
-//    // Uncomment if you don't want to explore children. FOR GRAPHING ONLY.
-//    //        break;
-//    //      }
-//  }
+  //  private void traverseChildren(Board b) {
+  //    Set<ByteBuffer> parents = new HashSet<>();
+  //    if (b.getParent() != null) {
+  //      parents.add(ByteBuffer.wrap(b.getParent().getState().toByteArray()));
+  //    }
+  //    Set<ByteBuffer> childrenStates = new LinkedHashSet<>();
+  //    Set<Board> children = new LinkedHashSet<>();
+  //
+  //    for (Board child : b) {
+  //      children.add(child);
+  //      childrenStates.add(ByteBuffer.wrap(child.getState().toByteArray()));
+  //    }
+  //
+  //    sendToCassandra(b.getState(), childrenStates, parents);
+  //
+  //    //    for (Board child : children) {
+  //    //      if (child.getLevel() == 29) {
+  //    //        executorService.execute(() -> {
+  //    //          seenBoards.get(b.getLevel()).put(child, 1);
+  //    //          traverseChildren(child);
+  //    //        });
+  //    //      } else {
+  //    //        seenBoards.get(b.getLevel()).put(child, 1);
+  //    if (!children.isEmpty()) {
+  //      traverseChildren(children.iterator().next());
+  //    }
+  //    // Uncomment if you don't want to explore children. FOR GRAPHING ONLY.
+  //    //        break;
+  //    //      }
+  //  }
 }
