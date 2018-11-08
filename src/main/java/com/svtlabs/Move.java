@@ -1,23 +1,26 @@
 package com.svtlabs;
 
-public class Move {
+import org.jetbrains.annotations.NotNull;
+
+class Move {
   private final int over;
   private final int to;
 
-  public Move(int over, int to) {
+  Move(int over, int to) {
     this.over = over;
     this.to = to;
   }
 
-  public int getOver() {
+  int getOver() {
     return over;
   }
 
-  public int getTo() {
+  int getTo() {
     return to;
   }
 
   @Override
+  @NotNull
   public String toString() {
     return String.format("%d,%d", over, to);
   }

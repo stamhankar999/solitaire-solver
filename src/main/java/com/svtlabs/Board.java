@@ -8,17 +8,29 @@ import java.util.Objects;
 import java.util.Spliterator;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 public class Board implements Iterable<Board> {
-  private final BitSet state;
+  static final int SLOTS = 37;
+  @NotNull private final BitSet state;
   private final int level;
-  private final Board parent;
+  @Nullable private final Board parent;
 
-  public Board(BitSet state, int level) {
+  /** Create a board with the initial state (e.g. a peg in every slot except for center). */
+  static Board initial() {
+    BitSet state = new BitSet(Board.SLOTS);
+    state.set(0, Board.SLOTS);
+    state.clear(18);
+
+    return new Board(state, 1);
+  }
+
+  Board(@NotNull BitSet state, int level) {
     this(state, level, null);
   }
 
-  private Board(BitSet state, int level, Board parent) {
+  private Board(@NotNull BitSet state, int level, @Nullable Board parent) {
     this.state = state;
     this.level = level;
     this.parent = parent;
@@ -37,18 +49,23 @@ public class Board implements Iterable<Board> {
     return Objects.hash(state);
   }
 
-  public BitSet getState() {
+  @SuppressWarnings("NullableProblems")
+  BitSet getState() {
     return state;
   }
 
+  @SuppressWarnings("unused")
   public int getLevel() {
     return level;
   }
 
+  @SuppressWarnings("unused")
+  @Nullable
   public Board getParent() {
     return parent;
   }
 
+  @NotNull
   @Override
   public Iterator<Board> iterator() {
     return new BoardIterator();
@@ -105,7 +122,7 @@ public class Board implements Iterable<Board> {
     }
 
     @Override
-    public Board next() {
+    public @Nullable Board next() {
       Move move = moveIterator.next();
       BitSet newState = (BitSet) state.clone();
       // Apply the move in newState:

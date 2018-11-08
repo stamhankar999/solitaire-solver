@@ -3,7 +3,7 @@ package com.svtlabs;
 import java.util.ArrayList;
 import java.util.List;
 
-public class MoveHelper {
+class MoveHelper {
   static List<List<Move>> MOVES = new ArrayList<>(37);
   private static int[] ROW_LENGTHS = {3, 5, 7, 7, 7, 5, 3, 99};
 
@@ -44,6 +44,9 @@ public class MoveHelper {
       }
     }
   }
+
+  /** This is a helper that should never be instantiated. */
+  private MoveHelper() {}
 
   private static int row(int pos) {
     if (pos < 0) {

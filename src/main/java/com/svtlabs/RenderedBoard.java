@@ -3,12 +3,13 @@ package com.svtlabs;
 import java.awt.*;
 import java.util.BitSet;
 import javax.swing.*;
+import org.jetbrains.annotations.NotNull;
 
-public class SolitaireBoard extends JFrame {
-  static int SIZE = 22;
-  private final BitSet state;
+public class RenderedBoard extends JFrame {
+  private static final int SIZE = 22;
+  @NotNull private final BitSet state;
 
-  public SolitaireBoard(String title, BitSet state) throws HeadlessException {
+  RenderedBoard(@NotNull String title, @NotNull BitSet state) throws HeadlessException {
     this.state = state;
 
     setTitle(title);
@@ -17,7 +18,7 @@ public class SolitaireBoard extends JFrame {
   }
 
   @Override
-  public void paint(Graphics g) {
+  public void paint(@NotNull Graphics g) {
     super.paint(g);
     int pos = 0;
     for (int row = 0; row < 7; row++) {
@@ -48,10 +49,10 @@ public class SolitaireBoard extends JFrame {
   }
 
   public static void main(String args[]) {
-    BitSet state = new BitSet(37);
+    BitSet state = new BitSet(Board.SLOTS);
     state.set(0, 37);
     state.clear(18);
-    SolitaireBoard board = new SolitaireBoard("yo", state);
+    RenderedBoard board = new RenderedBoard("yo", state);
     board.setVisible(true);
     board.setLocation(200, 200);
   }

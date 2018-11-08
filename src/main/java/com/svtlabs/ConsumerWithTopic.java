@@ -1,36 +1,38 @@
 package com.svtlabs;
 
+import java.util.Collections;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.jetbrains.annotations.NotNull;
-
-import java.util.Collections;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * KafkaConsumer wrapper class that keeps track of the subscribed topic and ignores subscribe
  * requests when the desired topic is already the currently subscribed topic.
  */
-public class ConsumerWithTopic<K, V> {
-  private final KafkaConsumer<K, V> wrapped;
-  private String currentTopic;
+class ConsumerWithTopic<K, V> {
+  @NotNull private final KafkaConsumer<K, V> wrapped;
+  @Nullable private String currentTopic;
 
-  public ConsumerWithTopic(KafkaConsumer<K, V> wrapped) {
+  ConsumerWithTopic(@NotNull KafkaConsumer<K, V> wrapped) {
     this.wrapped = wrapped;
   }
 
-  public void subscribe(@NotNull String topic) {
+  void subscribe(@NotNull String topic) {
     if (topic.equals(currentTopic)) {
       // Not changing topics.
       return;
     }
+    currentTopic = topic;
     wrapped.subscribe(Collections.singletonList(topic));
   }
 
-  public ConsumerRecords<K, V> poll(long timeout) {
-    return wrapped.poll(timeout);
+  @NotNull
+  ConsumerRecords<K, V> poll() {
+    return wrapped.poll(2000);
   }
 
-  public void close() {
+  void close() {
     wrapped.close();
   }
 }
