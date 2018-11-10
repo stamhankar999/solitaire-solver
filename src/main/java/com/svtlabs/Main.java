@@ -32,7 +32,6 @@ public class Main {
   private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   @NotNull private final CassandraClient cassandra;
   @NotNull private final KafkaClient kafka;
-
   private int consumeLevel;
 
   private Main(@NotNull String clientId) {
@@ -40,45 +39,42 @@ public class Main {
     kafka = new KafkaClient();
   }
 
-  private void processRecord(@NotNull ByteBuffer state, @Nullable ByteBuffer parent) {
+  private void processRecord(
+      @NotNull ByteBuffer canonicalState, @Nullable ByteBuffer canonicalParent) {
     // Compute child moves and send to C*.
-    // TODO: If a child is a rotational equivalent of another child, exclude one.
 
     // Check if this state is already stored in C*.
-    PersistedBoard persistedBoard = cassandra.getPersistedBoard(state);
+    PersistedBoard persistedBoard = cassandra.getPersistedBoard(canonicalState);
     if (persistedBoard != null) {
       // It already exists in C*, but its parents list might not contain the given parent.
       // Add it if necessary.
-      if (parent != null && !persistedBoard.containsParent(parent)) {
-        cassandra.addParent(state, parent);
+      if (canonicalParent != null && !persistedBoard.containsParent(canonicalParent)) {
+        cassandra.addParent(canonicalState, canonicalParent);
       }
       return;
     }
 
-    BitSet stateBitSet = BitSet.valueOf(state);
+    BitSet stateBitSet = BitSet.valueOf(canonicalState);
     Board b = new Board(stateBitSet, consumeLevel);
     Set<ByteBuffer> children = null;
     for (Board child : b) {
       if (children == null) {
         children = new LinkedHashSet<>();
       }
-      children.add(ByteBuffer.wrap(child.getState().toByteArray()));
+      children.add(ByteBuffer.wrap(MoveHelper.canonicalize(child.getState()).toByteArray()));
     }
-    cassandra.storeBoard(stateBitSet, children, parent);
+    cassandra.storeBoard(stateBitSet, children, canonicalParent);
 
     // Send child tasks to Kafka, for any child that hasn't yet been explored. For those
     // that have been explored, add "current" as a parent of the child.
-    // TODO: If a child is a rotational equivalent of another child (in this set of
-    // children), skip it. If it's equivalent to a child in the db, update that child to include
-    // this child's parent.
     if (children != null) {
       for (ByteBuffer child : children) {
         PersistedBoard persistedChildBoard = cassandra.getPersistedBoard(child);
         if (persistedChildBoard == null) {
-          kafka.addTask(consumeLevel + 1, child, state);
+          kafka.addTask(consumeLevel + 1, child, canonicalState);
         } else {
           LOGGER.debug("Child {} already exists in db", BitSet.valueOf(child));
-          cassandra.addParent(child, state);
+          cassandra.addParent(child, canonicalState);
         }
       }
       kafka.flush();
@@ -99,7 +95,7 @@ public class Main {
     // * For each child, add a task in Kafka.
     int processedCount = 0;
     //    for (int ctr = 0; ctr < 10; ++ctr) {
-    while (processedCount < 1000) {
+    while (processedCount < 500) {
       Collection<BoardTask> tasks = kafka.consumeTasks(consumeLevel);
       if (tasks.isEmpty()) {
         System.out.printf("Completed level %d!%n", consumeLevel);
@@ -126,33 +122,6 @@ public class Main {
     }
   }
 
-  @SuppressWarnings("unused")
-  private void renderBoardAncestry(@NotNull ByteBuffer board, int level) {
-    PersistedBoard persistedBoard = cassandra.getPersistedBoard(board);
-    assert persistedBoard != null;
-    Set<ByteBuffer> persistedParents = persistedBoard.getParents();
-
-    if (persistedParents != null && !persistedParents.isEmpty()) {
-      renderBoardAncestry(persistedParents.iterator().next(), level + 1);
-    }
-    BitSet state = BitSet.valueOf(board);
-    RenderedBoard renderedBoard = new RenderedBoard(String.format("sol %d", level), state);
-    renderedBoard.setLocation(level % 9 * 150, 100 + 200 * (level / 9));
-    renderedBoard.setVisible(true);
-  }
-
-  @SuppressWarnings("unused")
-  private void renderBoards(@NotNull Collection<PersistedBoard> boards, int startX, int startY) {
-    int idx = 0;
-    for (PersistedBoard board : boards) {
-      RenderedBoard renderedBoard =
-          new RenderedBoard(String.format("sol %d", idx), BitSet.valueOf(board.getState()));
-      renderedBoard.setLocation(startX + idx % 9 * 150, startY + 200 * (idx / 9));
-      renderedBoard.setVisible(true);
-      idx++;
-    }
-  }
-
   public static void main(String[] args) {
     if (args.length != 1) {
       System.err.println("Usage: solitaire-solver <client-id>");
@@ -170,9 +139,9 @@ public class Main {
     if (false) {
       @SuppressWarnings("UnusedAssignment")
       List<Collection<PersistedBoard>> allBoards = main.cassandra.getAllPersistedBoards();
-      main.renderBoards(allBoards.get(0), 300, 100);
-      main.renderBoards(allBoards.get(1), 200, 300);
-      main.renderBoards(allBoards.get(2), 100, 500);
+      Visualization.renderBoards(allBoards.get(0), 300, 100);
+      Visualization.renderBoards(allBoards.get(1), 200, 300);
+      Visualization.renderBoards(allBoards.get(2), 100, 500);
     }
 
     Runtime.getRuntime().addShutdownHook(new Thread(main::close));

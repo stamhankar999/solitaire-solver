@@ -6,14 +6,16 @@ import javax.swing.*;
 import org.jetbrains.annotations.NotNull;
 
 public class RenderedBoard extends JFrame {
-  private static final int SIZE = 22;
+  private static final int SIZE = 10;
   @NotNull private final BitSet state;
+  private static final int LEFT_MARGIN = 10;
+  private static final int TOP_MARGIN = 35;
 
   RenderedBoard(@NotNull String title, @NotNull BitSet state) throws HeadlessException {
     this.state = state;
 
     setTitle(title);
-    setSize(180, 220);
+    setSize(8 * SIZE, 8 * SIZE + 50);
     setDefaultCloseOperation(DISPOSE_ON_CLOSE);
   }
 
@@ -36,8 +38,8 @@ public class RenderedBoard extends JFrame {
       }
 
       for (int col = colStart; col <= colEnd; ++col) {
-        int x = col * SIZE;
-        int y = (row + 2) * SIZE;
+        int x = col * SIZE + LEFT_MARGIN;
+        int y = row * SIZE + TOP_MARGIN;
         //        g.drawString(String.format("%d", pos++),x, y);
         if (state.get(pos++)) {
           g.fillOval(x, y, SIZE, SIZE);
