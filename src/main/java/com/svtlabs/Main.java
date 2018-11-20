@@ -12,17 +12,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Entry point to the solitaire solver. The application relies on a C* database with the following
- * schema pre-created:
- *
- * <pre>
- * CREATE KEYSPACE solitaire WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
- * CREATE TABLE solitaire.boards (state blob PRIMARY KEY, best_result int, parents set<blob>, children set<blob>, client_id text, level tinyint);
- * CREATE TABLE solitaire.client_metrics (client_id text PRIMARY KEY, boards_processed counter);
- * CREATE TABLE solitaire.level_metrics (level tinyint PRIMARY KEY, boards_processed counter);
- * </pre>
- *
- * <p>The topic should be created like this:
+ * Entry point to the solitaire solver. The application relies on a C* database with the schema
+ * specified in misc/schema.cql pre-created. It also relies on the following topic to exist in
+ * Kafka:
  *
  * <pre>
  * bin/kafka-topics --zookeeper localhost --create --topic solitaire --partitions 100 --replication-factor 1
@@ -50,6 +42,7 @@ public class Main {
       // Add it if necessary.
       if (canonicalParent != null && !persistedBoard.containsParent(canonicalParent)) {
         cassandra.addParent(canonicalState, canonicalParent);
+        cassandra.updateBestResult(canonicalParent, persistedBoard.getBestResult());
       }
       return;
     }
@@ -78,6 +71,9 @@ public class Main {
         }
       }
       kafka.flush();
+    } else {
+      // This is a leaf state, so the game ends (for this path) with however many pegs are left.
+      cassandra.updateBestResult(canonicalState, (byte) stateBitSet.cardinality());
     }
   }
 

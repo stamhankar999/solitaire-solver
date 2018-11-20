@@ -10,16 +10,19 @@ class PersistedBoard {
   @Nullable private final Set<ByteBuffer> parents;
   @Nullable private final Set<ByteBuffer> children;
   private final byte level;
+  private final byte bestResult;
 
   PersistedBoard(
       @NotNull ByteBuffer state,
       @Nullable Set<ByteBuffer> parents,
       @Nullable Set<ByteBuffer> children,
-      byte level) {
+      byte level,
+      byte bestResult) {
     this.state = state;
     this.parents = parents;
     this.level = level;
     this.children = children;
+    this.bestResult = bestResult;
   }
 
   @NotNull
@@ -41,6 +44,10 @@ class PersistedBoard {
 
   byte getLevel() {
     return level;
+  }
+
+  byte getBestResult() {
+    return bestResult;
   }
 
   boolean containsParent(@Nullable ByteBuffer parent) {
