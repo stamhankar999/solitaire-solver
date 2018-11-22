@@ -1,11 +1,19 @@
 package com.svtlabs;
 
+import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -25,22 +33,26 @@ public class Main {
   @NotNull private final CassandraClient cassandra;
   @NotNull private final KafkaClient kafka;
   private int consumeLevel;
+  private final ExecutorService executorService;
 
-  private Main(@NotNull String clientId) {
+  private Main(@NotNull String clientId, int numThreads) {
     cassandra = new CassandraClient(clientId);
     kafka = new KafkaClient();
+    executorService = Executors.newFixedThreadPool(numThreads);
   }
 
   private void processRecord(
       @NotNull ByteBuffer canonicalState, @Nullable ByteBuffer canonicalParent) {
-    // Compute child moves and send to C*.
-
     // Check if this state is already stored in C*.
     PersistedBoard persistedBoard = cassandra.getPersistedBoard(canonicalState);
     if (persistedBoard != null) {
       // It already exists in C*, but its parents list might not contain the given parent.
       // Add it if necessary.
       if (canonicalParent != null && !persistedBoard.containsParent(canonicalParent)) {
+//        CompletionStage<? extends AsyncResultSet> stage =
+//            cassandra.addParentAsync(canonicalState, canonicalParent);
+//        cassandra.updateBestResult(canonicalParent, persistedBoard.getBestResult());
+//        stage.toCompletableFuture().join();
         cassandra.addParent(canonicalState, canonicalParent);
         cassandra.updateBestResult(canonicalParent, persistedBoard.getBestResult());
       }
@@ -59,17 +71,36 @@ public class Main {
     cassandra.storeBoard(stateBitSet, children, canonicalParent);
 
     // Send child tasks to Kafka, for any child that hasn't yet been explored. For those
-    // that have been explored, add "current" as a parent of the child.
+    // that have been explored, add "current" as a parent of the child. Propagate best_result's
+    // from children to "current" and beyond as needed. There can be many children, so we make
+    // async queries to C* to get the persisted-boards and process them.
     if (children != null) {
-      for (ByteBuffer child : children) {
-        PersistedBoard persistedChildBoard = cassandra.getPersistedBoard(child);
-        if (persistedChildBoard == null) {
-          kafka.addTask(consumeLevel + 1, child, canonicalState);
-        } else {
-          LOGGER.debug("Child {} already exists in db", BitSet.valueOf(child));
-          cassandra.addParent(child, canonicalState);
-        }
-      }
+      List<CompletionStage<Void>> stages =
+          children
+              .stream()
+              .map(
+                  child ->
+                      cassandra
+                          .getPersistedBoardAsync(child)
+                          .thenAccept(
+                              persistedChildBoard -> {
+                                if (persistedChildBoard == null) {
+                                  kafka.addTask(consumeLevel + 1, child, canonicalState);
+                                } else {
+                                  LOGGER.debug(
+                                      "Child {} already exists in db", BitSet.valueOf(child));
+                                  CompletionStage<? extends AsyncResultSet> stage =
+                                      cassandra.addParentAsync(child, canonicalState);
+                                  cassandra.updateBestResult(
+                                      canonicalState, persistedChildBoard.getBestResult());
+                                  stage.toCompletableFuture().join();
+                                }
+                              }))
+              .collect(Collectors.toList());
+
+      // Wait for all of the children to be processed and then flush the pending kafka
+      // messages (for submitting new tasks to the queue).
+      stages.forEach(stage -> stage.toCompletableFuture().join());
       kafka.flush();
     } else {
       // This is a leaf state, so the game ends (for this path) with however many pegs are left.
@@ -89,28 +120,42 @@ public class Main {
     // * Calculate the list of possible next moves from the current board.
     // * Add a row in C* with the current board, its children, and its parent.
     // * For each child, add a task in Kafka.
-    int processedCount = 0;
+
     //    for (int ctr = 0; ctr < 10; ++ctr) {
-    while (processedCount < 500) {
+    // Create an execution pool to push processRecord tasks into.
+    while (true) {
       Collection<BoardTask> tasks = kafka.consumeTasks(consumeLevel);
       if (tasks.isEmpty()) {
         System.out.printf("Completed level %d!%n", consumeLevel);
         consumeLevel++;
-        if (consumeLevel == Board.SLOTS) {
+        if (consumeLevel == 8) { // Board.SLOTS) {
           // Completed last level. We're done!
           break;
         }
         continue;
       }
+
+      List<Future<?>> futures = new ArrayList<>();
       for (BoardTask task : tasks) {
-        processRecord(task.getState(), task.getParent());
-        processedCount++;
+        // Add this task to the execution queue and collect the future.
+        futures.add(executorService.submit(() -> processRecord(task.getState(), task.getParent())));
       }
+
+      // Wait on futures.
+      futures.forEach(
+          f -> {
+            try {
+              f.get();
+            } catch (InterruptedException | ExecutionException e) {
+              e.printStackTrace();
+            }
+          });
     }
   }
 
   private void close() {
     try {
+      executorService.shutdown();
       cassandra.close();
       kafka.close();
     } catch (RuntimeException e) {
@@ -122,19 +167,22 @@ public class Main {
     if (args.length != 1) {
       System.err.println("Usage: solitaire-solver <client-id>");
     }
-    Main main = new Main(args[0]);
+    Main main = new Main(args[0], 1);
 
     // Get the ball rolling by pushing a task to Kafka (the initial state of the board)
     if ("ij1".equals(args[0])) {
       main.addInitialBoardTask();
     }
 
+    long start = System.currentTimeMillis();
     main.run();
+    long end = System.currentTimeMillis();
+    System.out.println(String.format("Run time: %d ms", end - start));
 
     //noinspection ConstantConditions
     if (false) {
       @SuppressWarnings("UnusedAssignment")
-      List<Collection<PersistedBoard>> allBoards = main.cassandra.getAllPersistedBoards();
+      List<Collection<PersistedBoard>> allBoards = main.cassandra.getAllPersistedBoardsByLevel();
       Visualization.renderBoards(allBoards.get(0), 300, 100);
       Visualization.renderBoards(allBoards.get(1), 200, 300);
       Visualization.renderBoards(allBoards.get(2), 100, 500);

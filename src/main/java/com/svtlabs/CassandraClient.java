@@ -4,6 +4,7 @@ import static com.svtlabs.Board.SLOTS;
 
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.CqlSessionBuilder;
+import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.BoundStatementBuilder;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.cql.ResultSet;
@@ -15,8 +16,10 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletionStage;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -43,7 +46,7 @@ class CassandraClient {
                 + ")");
     updateParentsStatement =
         session.prepare(
-            "UPDATE solitaire.boards SET parents = parents + :new_parent WHERE state = :state");
+            "UPDATE solitaire.boards SET parents = parents + :new_parent WHERE state = :state IF parents = :cur_parents");
     updateBestResultStatement =
         session.prepare(
             "UPDATE solitaire.boards SET best_result=:new_best WHERE state = :state IF best_result = :cur_best");
@@ -78,6 +81,37 @@ class CassandraClient {
   }
 
   void addParent(@NotNull ByteBuffer stateBuffer, @NotNull ByteBuffer parent) {
+    PersistedBoard pb = getPersistedBoard(stateBuffer);
+    assert pb != null;
+    Set<ByteBuffer> currentParents = pb.getParents();
+
+    while (currentParents == null || !currentParents.contains(parent)) {
+//      Set<ByteBuffer> newParents = new HashSet<>();
+//      if (currentParents != null) {
+//        newParents.addAll(currentParents);
+//      }
+//      newParents.add(parent);
+
+      BoundStatementBuilder boundStatementBuilder =
+          updateParentsStatement
+              .boundStatementBuilder()
+              .setByteBuffer("state", stateBuffer)
+              .setSet("new_parent", Collections.singleton(parent), ByteBuffer.class)
+              .setSet("cur_parents", currentParents, ByteBuffer.class);
+      ResultSet rs = session.execute(boundStatementBuilder.build());
+      if (rs.wasApplied()) {
+        // Success!
+        break;
+      } else {
+        Row r = rs.one();
+        assert r != null;
+        currentParents = r.getSet("parents", ByteBuffer.class);
+      }
+    }
+  }
+
+  CompletionStage<? extends AsyncResultSet> addParentAsync(
+      @NotNull ByteBuffer stateBuffer, @NotNull ByteBuffer parent) {
     // Add the parent; we do this separately from the INSERT above because multiple clients
     // may try to insert the same state at the same time (coming from different parents).
     // The concurrent inserts are idempotent (other than only one client getting final credit
@@ -88,7 +122,7 @@ class CassandraClient {
             .boundStatementBuilder()
             .setByteBuffer("state", stateBuffer)
             .setSet("new_parent", Collections.singleton(parent), ByteBuffer.class);
-    session.execute(boundStatementBuilder.build());
+    return session.executeAsync(boundStatementBuilder.build());
   }
 
   private void updateMetrics(byte level) {
@@ -103,14 +137,21 @@ class CassandraClient {
 
   @Nullable
   PersistedBoard getPersistedBoard(@NotNull ByteBuffer state) {
-    ResultSet rs =
-        session.execute(
+    return getPersistedBoardAsync(state).toCompletableFuture().join();
+  }
+
+  CompletionStage<PersistedBoard> getPersistedBoardAsync(@NotNull ByteBuffer state) {
+    CompletionStage<? extends AsyncResultSet> stage =
+        session.executeAsync(
             selectStatement.boundStatementBuilder().setByteBuffer("state", state).build());
-    Row row = rs.one();
-    if (row == null) {
-      return null;
-    }
-    return rowToPersistedBoard(row);
+    return stage.thenApply(
+        rs -> {
+          Row row = rs.one();
+          if (row == null) {
+            return null;
+          }
+          return rowToPersistedBoard(row);
+        });
   }
 
   /**
@@ -118,7 +159,7 @@ class CassandraClient {
    * stored in index N-1.
    */
   @NotNull
-  List<Collection<PersistedBoard>> getAllPersistedBoards() {
+  List<Collection<PersistedBoard>> getAllPersistedBoardsByLevel() {
     ResultSet rs = session.execute("SELECT * FROM solitaire.boards");
     List<Collection<PersistedBoard>> boards = new ArrayList<>(SLOTS);
     for (int i = 0; i < SLOTS; i++) {
@@ -129,7 +170,7 @@ class CassandraClient {
       PersistedBoard board = rowToPersistedBoard(row);
       Collection<PersistedBoard> coll = boards.get(board.getLevel() - 1);
       if (coll == null) {
-        coll = new ArrayList<>();
+        coll = new HashSet<>();
         boards.set(board.getLevel() - 1, coll);
       }
       coll.add(board);
@@ -138,9 +179,23 @@ class CassandraClient {
   }
 
   @NotNull
+  Set<PersistedBoard> getAllPersistedBoards() {
+    ResultSet rs = session.execute("SELECT * FROM solitaire.boards");
+    Set<PersistedBoard> boards = new HashSet<>();
+    for (Row row : rs) {
+      boards.add(rowToPersistedBoard(row));
+    }
+    return boards;
+  }
+
+  @NotNull
   private PersistedBoard rowToPersistedBoard(Row row) {
     Set<ByteBuffer> persistedParents = row.getSet("parents", ByteBuffer.class);
     Set<ByteBuffer> children = row.getSet("children", ByteBuffer.class);
+
+    assert persistedParents != null;
+    assert children != null;
+
     byte level = row.getByte("level");
     byte bestResult = row.getByte("best_result");
     ByteBuffer state = row.getByteBuffer("state");
@@ -187,9 +242,7 @@ class CassandraClient {
     // If we updated the best_result, propagate it to our parents.
     if (didUpdate) {
       Set<ByteBuffer> parents = pb.getParents();
-      if (parents != null) {
-        parents.forEach(p -> updateBestResult(p, newBest));
-      }
+      parents.forEach(p -> updateBestResult(p, newBest));
     }
   }
 

@@ -22,6 +22,7 @@ class KafkaClient {
   private static final String TOPIC_BASE = "solitaire";
   private static final String GROUP_ID = "Solitaire";
   private static final String CLIENT_ID = "Solitaire";
+  private static final int POLL_TIMEOUT = 2000;
   @NotNull private final KafkaProducer<ByteBuffer, ByteBuffer> producer;
   @NotNull private final ConsumerWithTopic<ByteBuffer, ByteBuffer> consumer;
 
@@ -56,7 +57,7 @@ class KafkaClient {
   @NotNull
   Collection<BoardTask> consumeTasks(int level) {
     consumer.subscribe(getTopicName(level));
-    ConsumerRecords<ByteBuffer, ByteBuffer> records = consumer.poll();
+    ConsumerRecords<ByteBuffer, ByteBuffer> records = consumer.poll(POLL_TIMEOUT);
     List<BoardTask> result = new ArrayList<>(records.count());
     for (ConsumerRecord<ByteBuffer, ByteBuffer> record : records) {
       result.add(new BoardTask(record.key(), record.value()));

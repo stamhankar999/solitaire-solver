@@ -54,14 +54,12 @@ public class Board implements Iterable<Board> {
     return state;
   }
 
-  @SuppressWarnings("unused")
-  public int getLevel() {
+  int getLevel() {
     return level;
   }
 
-  @SuppressWarnings("unused")
   @Nullable
-  public Board getParent() {
+  Board getParent() {
     return parent;
   }
 

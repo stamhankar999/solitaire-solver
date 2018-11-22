@@ -27,9 +27,10 @@ class ConsumerWithTopic<K, V> {
     wrapped.subscribe(Collections.singletonList(topic));
   }
 
+  @SuppressWarnings("SameParameterValue")
   @NotNull
-  ConsumerRecords<K, V> poll() {
-    return wrapped.poll(2000);
+  ConsumerRecords<K, V> poll(long timeout) {
+    return wrapped.poll(timeout);
   }
 
   void close() {
