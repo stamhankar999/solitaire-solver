@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -46,7 +47,7 @@ class CassandraClient {
                 + ")");
     updateParentsStatement =
         session.prepare(
-            "UPDATE solitaire.boards SET parents = parents + :new_parent WHERE state = :state IF parents = :cur_parents");
+            "UPDATE solitaire.boards SET parents = parents + :new_parent WHERE state = :state");
     updateBestResultStatement =
         session.prepare(
             "UPDATE solitaire.boards SET best_result=:new_best WHERE state = :state IF best_result = :cur_best");
@@ -59,7 +60,7 @@ class CassandraClient {
             "UPDATE solitaire.level_metrics SET boards_processed = boards_processed + 1 WHERE level = :level");
   }
 
-  void storeBoard(
+  CompletableFuture<? extends AsyncResultSet> storeBoard(
       @NotNull BitSet state,
       @Nullable Set<ByteBuffer> childrenStates,
       @Nullable ByteBuffer parent) {
@@ -72,42 +73,20 @@ class CassandraClient {
         .setString("client_id", clientId)
         .setByte("level", level);
     session.execute(boundStatementBuilder.build());
+    CompletableFuture<? extends AsyncResultSet> result = new CompletableFuture<>();
+    result.complete(null);
     if (parent != null) {
-      addParent(stateBuffer, parent);
+      result = addParentAsync(stateBuffer, parent).toCompletableFuture();
     }
     // Update the metrics; run asynchronously and don't wait for the result. If there's a failure,
     // we don't really care.
     updateMetrics(level);
+    return result;
   }
 
-  void addParent(@NotNull ByteBuffer stateBuffer, @NotNull ByteBuffer parent) {
-    PersistedBoard pb = getPersistedBoard(stateBuffer);
-    assert pb != null;
-    Set<ByteBuffer> currentParents = pb.getParents();
-
-    while (currentParents == null || !currentParents.contains(parent)) {
-//      Set<ByteBuffer> newParents = new HashSet<>();
-//      if (currentParents != null) {
-//        newParents.addAll(currentParents);
-//      }
-//      newParents.add(parent);
-
-      BoundStatementBuilder boundStatementBuilder =
-          updateParentsStatement
-              .boundStatementBuilder()
-              .setByteBuffer("state", stateBuffer)
-              .setSet("new_parent", Collections.singleton(parent), ByteBuffer.class)
-              .setSet("cur_parents", currentParents, ByteBuffer.class);
-      ResultSet rs = session.execute(boundStatementBuilder.build());
-      if (rs.wasApplied()) {
-        // Success!
-        break;
-      } else {
-        Row r = rs.one();
-        assert r != null;
-        currentParents = r.getSet("parents", ByteBuffer.class);
-      }
-    }
+  private void addParent(@NotNull ByteBuffer stateBuffer, @NotNull ByteBuffer parent) {
+    CompletionStage<? extends AsyncResultSet> stage = addParentAsync(stateBuffer, parent);
+    stage.toCompletableFuture().join();
   }
 
   CompletionStage<? extends AsyncResultSet> addParentAsync(
@@ -282,6 +261,8 @@ class CassandraClient {
     ByteBuffer b5 = ByteBuffer.wrap(b5Bits.toByteArray());
     ByteBuffer b6 = ByteBuffer.wrap(b6Bits.toByteArray());
 
+    // TODO: This no longer synchronously updates parents.
+    // Sync here before using this test code.
     client.storeBoard(b1Bits, null, null);
     client.storeBoard(b2Bits, null, b1);
     client.storeBoard(b3Bits, null, b1);

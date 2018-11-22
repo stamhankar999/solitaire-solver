@@ -8,6 +8,7 @@ import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -49,12 +50,10 @@ public class Main {
       // It already exists in C*, but its parents list might not contain the given parent.
       // Add it if necessary.
       if (canonicalParent != null && !persistedBoard.containsParent(canonicalParent)) {
-//        CompletionStage<? extends AsyncResultSet> stage =
-//            cassandra.addParentAsync(canonicalState, canonicalParent);
-//        cassandra.updateBestResult(canonicalParent, persistedBoard.getBestResult());
-//        stage.toCompletableFuture().join();
-        cassandra.addParent(canonicalState, canonicalParent);
+        CompletionStage<? extends AsyncResultSet> stage =
+            cassandra.addParentAsync(canonicalState, canonicalParent);
         cassandra.updateBestResult(canonicalParent, persistedBoard.getBestResult());
+        stage.toCompletableFuture().join();
       }
       return;
     }
@@ -68,7 +67,8 @@ public class Main {
       }
       children.add(ByteBuffer.wrap(MoveHelper.canonicalize(child.getState()).toByteArray()));
     }
-    cassandra.storeBoard(stateBitSet, children, canonicalParent);
+    CompletableFuture<? extends AsyncResultSet> addParentFuture =
+        cassandra.storeBoard(stateBitSet, children, canonicalParent);
 
     // Send child tasks to Kafka, for any child that hasn't yet been explored. For those
     // that have been explored, add "current" as a parent of the child. Propagate best_result's
@@ -101,9 +101,11 @@ public class Main {
       // Wait for all of the children to be processed and then flush the pending kafka
       // messages (for submitting new tasks to the queue).
       stages.forEach(stage -> stage.toCompletableFuture().join());
+      addParentFuture.join();
       kafka.flush();
     } else {
       // This is a leaf state, so the game ends (for this path) with however many pegs are left.
+      addParentFuture.join();
       cassandra.updateBestResult(canonicalState, (byte) stateBitSet.cardinality());
     }
   }
