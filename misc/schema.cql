@@ -1,4 +1,1 @@
-CREATE KEYSPACE solitaire WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
-CREATE TABLE solitaire.boards (state blob PRIMARY KEY, best_result tinyint, parents set<blob>, children set<blob>, client_id text, level tinyint);
-CREATE TABLE solitaire.client_metrics (client_id text PRIMARY KEY, boards_processed counter);
-CREATE TABLE solitaire.level_metrics (level tinyint PRIMARY KEY, boards_processed counter);
+DROP KEYSPACE solitaire; CREATE KEYSPACE solitaire WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}; CREATE TABLE solitaire.boards (state blob PRIMARY KEY, best_result tinyint, children set<blob>, client_id text, level tinyint); CREATE TABLE solitaire.client_metrics (client_id text PRIMARY KEY, boards_processed counter); CREATE TABLE solitaire.level_metrics (level tinyint PRIMARY KEY, boards_processed counter); CREATE TABLE solitaire.board_parents (state blob, parent blob, PRIMARY KEY (state, parent));

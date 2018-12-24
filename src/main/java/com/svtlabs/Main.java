@@ -31,13 +31,14 @@ import org.slf4j.LoggerFactory;
  */
 public class Main {
   private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
+  public static final int MAX_LEVEL = 8;
   @NotNull private final CassandraClient cassandra;
   @NotNull private final KafkaClient kafka;
   private int consumeLevel;
   private final ExecutorService executorService;
 
   private Main(@NotNull String clientId, int numThreads) {
-    cassandra = new CassandraClient(clientId);
+    cassandra = new CassandraClient(clientId, "192.168.127.121");
     kafka = new KafkaClient();
     executorService = Executors.newFixedThreadPool(numThreads);
   }
@@ -67,8 +68,12 @@ public class Main {
       }
       children.add(ByteBuffer.wrap(MoveHelper.canonicalize(child.getState()).toByteArray()));
     }
-    CompletableFuture<? extends AsyncResultSet> addParentFuture =
-        cassandra.storeBoard(stateBitSet, children, canonicalParent);
+    // First, begin adding the parent.
+    ByteBuffer stateBuffer = ByteBuffer.wrap(stateBitSet.toByteArray());
+    CompletableFuture<? extends AsyncResultSet> addParentFuture = canonicalParent != null ?
+        cassandra.addParentAsync(stateBuffer, canonicalParent).toCompletableFuture() : null;
+
+    cassandra.storeBoard(stateBitSet, children);
 
     // Send child tasks to Kafka, for any child that hasn't yet been explored. For those
     // that have been explored, add "current" as a parent of the child. Propagate best_result's
@@ -85,12 +90,18 @@ public class Main {
                           .thenAccept(
                               persistedChildBoard -> {
                                 if (persistedChildBoard == null) {
+                                  if (addParentFuture != null) {
+                                    addParentFuture.join();
+                                  }
                                   kafka.addTask(consumeLevel + 1, child, canonicalState);
                                 } else {
                                   LOGGER.debug(
                                       "Child {} already exists in db", BitSet.valueOf(child));
                                   CompletionStage<? extends AsyncResultSet> stage =
                                       cassandra.addParentAsync(child, canonicalState);
+                                  if (addParentFuture != null) {
+                                    addParentFuture.join();
+                                  }
                                   cassandra.updateBestResult(
                                       canonicalState, persistedChildBoard.getBestResult());
                                   stage.toCompletableFuture().join();
@@ -101,11 +112,15 @@ public class Main {
       // Wait for all of the children to be processed and then flush the pending kafka
       // messages (for submitting new tasks to the queue).
       stages.forEach(stage -> stage.toCompletableFuture().join());
-      addParentFuture.join();
+      if (addParentFuture != null) {
+        addParentFuture.join();
+      }
       kafka.flush();
     } else {
       // This is a leaf state, so the game ends (for this path) with however many pegs are left.
-      addParentFuture.join();
+      if (addParentFuture != null) {
+        addParentFuture.join();
+      }
       cassandra.updateBestResult(canonicalState, (byte) stateBitSet.cardinality());
     }
   }
@@ -130,7 +145,7 @@ public class Main {
       if (tasks.isEmpty()) {
         System.out.printf("Completed level %d!%n", consumeLevel);
         consumeLevel++;
-        if (consumeLevel == 8) { // Board.SLOTS) {
+        if (consumeLevel == MAX_LEVEL) { // Board.SLOTS) {
           // Completed last level. We're done!
           break;
         }

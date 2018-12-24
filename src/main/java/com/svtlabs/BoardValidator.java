@@ -18,7 +18,7 @@ public class BoardValidator {
   private static final Map<ByteBuffer, PersistedBoard> seenBoards = new HashMap<>();
 
   private static void traverse(@NotNull Board b) {
-    if (b.getLevel() == 8) {
+    if (b.getLevel() == Main.MAX_LEVEL) {
       // Stop traversing.
       return;
     }
@@ -50,7 +50,7 @@ public class BoardValidator {
   }
 
   public static void main(String[] args) {
-    CassandraClient client = new CassandraClient("test");
+    CassandraClient client = new CassandraClient("test", "192.168.127.121");
 
     // Run the algorithm and collect boards up through level 7.
     Board b = Board.initial();
@@ -68,13 +68,17 @@ public class BoardValidator {
     // Walk through actuals to make sure every PersistedBoard is equivalent to the one in
     // seenBoards
 
-    List<PersistedBoard> mismatches = actualBoards.stream()
-        .filter(actualPb -> !(seenBoards.get(actualPb.getState()).equals(actualPb)))
-        .collect(Collectors.toList());
+    List<PersistedBoard> mismatches =
+        actualBoards
+            .stream()
+            .filter(actualPb -> !(seenBoards.get(actualPb.getState()).equals(actualPb)))
+            .collect(Collectors.toList());
     if (mismatches.isEmpty()) {
       System.out.println("Hooray!");
     } else {
-      System.err.printf("Found %d mismatches out of a total %d boards.\n", mismatches.size(), actualBoards.size());
+      System.err.printf(
+          "Found %d mismatches out of a total %d boards.\n",
+          mismatches.size(), actualBoards.size());
     }
     client.close();
   }
