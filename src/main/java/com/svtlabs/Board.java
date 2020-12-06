@@ -1,7 +1,8 @@
 package com.svtlabs;
 
-import java.util.ArrayList;
+import java.nio.ByteBuffer;
 import java.util.BitSet;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
@@ -12,28 +13,27 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 public class Board implements Iterable<Board> {
+
   static final int SLOTS = 37;
   @NotNull private final BitSet state;
   private final int level;
-  @Nullable private final Board parent;
 
   /** Create a board with the initial state (e.g. a peg in every slot except for center). */
-  static Board initial() {
+  static Board initial(int emptySlot) {
     BitSet state = new BitSet(Board.SLOTS);
     state.set(0, Board.SLOTS);
-    state.clear(18);
+    state.clear(emptySlot);
 
-    return new Board(state, 1);
+    return new Board(state);
   }
 
-  Board(@NotNull BitSet state, int level) {
-    this(state, level, null);
-  }
-
-  private Board(@NotNull BitSet state, int level, @Nullable Board parent) {
+  Board(@NotNull BitSet state) {
     this.state = state;
-    this.level = level;
-    this.parent = parent;
+    level = Board.SLOTS - state.cardinality();
+  }
+
+  Board(@NotNull ByteBuffer state) {
+    this(BitSet.valueOf(state));
   }
 
   @Override
@@ -49,20 +49,13 @@ public class Board implements Iterable<Board> {
     return Objects.hash(state);
   }
 
-  @SuppressWarnings("NullableProblems")
+  @NotNull
   BitSet getState() {
     return state;
   }
 
-  @SuppressWarnings("unused")
   public int getLevel() {
     return level;
-  }
-
-  @SuppressWarnings("unused")
-  @Nullable
-  public Board getParent() {
-    return parent;
   }
 
   @NotNull
@@ -88,8 +81,8 @@ public class Board implements Iterable<Board> {
 
     BoardIterator() {
       pos = -1;
-      moves = new ArrayList<>();
-      moveIterator = moves.iterator();
+      moves = Collections.emptyList();
+      moveIterator = Collections.emptyListIterator();
     }
 
     @Override
@@ -132,7 +125,7 @@ public class Board implements Iterable<Board> {
       newState.clear(pos);
       newState.clear(move.getOver());
       newState.set(move.getTo());
-      return new Board(newState, level + 1, Board.this);
+      return new Board(newState);
     }
   }
 }

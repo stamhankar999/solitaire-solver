@@ -50,7 +50,7 @@ public class RenderedBoard extends JFrame {
     }
   }
 
-  public static void main(String args[]) {
+  public static void main(String[] args) {
     BitSet state = new BitSet(Board.SLOTS);
     state.set(0, 37);
     state.clear(18);

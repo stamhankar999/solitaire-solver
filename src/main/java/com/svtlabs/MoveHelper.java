@@ -8,14 +8,14 @@ import java.util.TreeSet;
 
 class MoveHelper {
   static List<List<Move>> MOVES = new ArrayList<>(Board.SLOTS);
-  private static int[] ROW_LENGTHS = {3, 5, 7, 7, 7, 5, 3, 99};
+  private static final int[] ROW_LENGTHS = {3, 5, 7, 7, 7, 5, 3, 99};
 
   // Map of state bits to rotate a board right by 90 degrees.
   // Use a simple array where the index represents the destination
   // bit index and the value is the source bit index.
   // Example: to say that bit 0 in the right-rotated board has
   // the value of bit 22 in the original board, ROTATE_RIGHT[0] = 22.
-  private static int[] ROTATE_RIGHT = {
+  private static final int[] ROTATE_RIGHT = {
     22, 15, 8, //
     29, 23, 16, 9, 3, //
     34, 30, 24, 17, 10, 4, 0, //
@@ -26,7 +26,7 @@ class MoveHelper {
   };
 
   // Analogous to ROTATE_RIGHT, to flip a board along the vertical axis.
-  private static int[] MIRROR_ALONG_VERTICAL = {
+  private static final int[] MIRROR_ALONG_VERTICAL = {
     2, 1, 0, //
     7, 6, 5, 4, 3, //
     14, 13, 12, 11, 10, 9, 8, //

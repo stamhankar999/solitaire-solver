@@ -1,15 +1,22 @@
 package com.svtlabs;
 
-import java.nio.ByteBuffer;
-import java.util.BitSet;
-import java.util.Collection;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
+import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Entry point to the solitaire solver. The application relies on a C* database with the schema
@@ -24,31 +31,48 @@ public class Main {
   private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   @NotNull private final CassandraClient cassandra;
   @NotNull private final KafkaClient kafka;
-  private int consumeLevel;
+  @NotNull private final AtomicBoolean stopped;
 
-  private Main(@NotNull String clientId) {
-    cassandra = new CassandraClient(clientId);
-    kafka = new KafkaClient();
+  private Main(
+      @NotNull String clientId,
+      @NotNull String bootstrapServers,
+      @NotNull String topicName,
+      @NotNull String cassandraSeed) {
+    cassandra = new CassandraClient(clientId, cassandraSeed);
+    kafka = new KafkaClient(clientId, bootstrapServers, topicName);
+    stopped = new AtomicBoolean();
   }
 
-  private void processRecord(
-      @NotNull ByteBuffer canonicalState, @Nullable ByteBuffer canonicalParent) {
+  private void processRecord(@NotNull ByteBuffer canonicalState, Map<String, Long> metrics)
+      throws ExecutionException, InterruptedException {
     // Compute child moves and send to C*.
 
     // Check if this state is already stored in C*.
-    PersistedBoard persistedBoard = cassandra.getPersistedBoard(canonicalState);
+    long start = System.currentTimeMillis();
+    Board persistedBoard = cassandra.getBoard(canonicalState);
+    metrics.put("boardCheck", System.currentTimeMillis() - start);
     if (persistedBoard != null) {
-      // It already exists in C*, but its parents list might not contain the given parent.
-      // Add it if necessary.
-      if (canonicalParent != null && !persistedBoard.containsParent(canonicalParent)) {
-        cassandra.addParent(canonicalState, canonicalParent);
-        cassandra.updateBestResult(canonicalParent, persistedBoard.getBestResult());
-      }
+      LOGGER.info(
+          "Encountered board that has already been processed at level {}!",
+          persistedBoard.getLevel());
       return;
     }
 
-    BitSet stateBitSet = BitSet.valueOf(canonicalState);
-    Board b = new Board(stateBitSet, consumeLevel);
+    Board b = new Board(canonicalState);
+
+    // Check if this is a winning board.
+    if (b.getLevel() == Board.SLOTS - 1) {
+      LOGGER.info("We have a winner!");
+      List<CompletionStage<? extends AsyncResultSet>> futures = new ArrayList<>();
+      long startCass = System.currentTimeMillis();
+      futures.add(cassandra.storeWinningBoard(b.getState()));
+      futures.addAll(cassandra.storeBoard(b.getState()));
+      // Wait for all C* ops to complete.
+      futures.forEach(stage -> stage.toCompletableFuture().join());
+      metrics.put("cassUpdate", System.currentTimeMillis() - startCass);
+      return;
+    }
+
     Set<ByteBuffer> children = null;
     for (Board child : b) {
       if (children == null) {
@@ -56,55 +80,86 @@ public class Main {
       }
       children.add(ByteBuffer.wrap(MoveHelper.canonicalize(child.getState()).toByteArray()));
     }
-    cassandra.storeBoard(stateBitSet, children, canonicalParent);
 
-    // Send child tasks to Kafka, for any child that hasn't yet been explored. For those
-    // that have been explored, add "current" as a parent of the child.
+    // Add child->parent mappings to C*, and add child tasks to Kafka.
+    long cassTime = 0;
+    long kafkaTime = 0;
     if (children != null) {
+      List<CompletionStage<? extends AsyncResultSet>> futures = new ArrayList<>();
       for (ByteBuffer child : children) {
-        PersistedBoard persistedChildBoard = cassandra.getPersistedBoard(child);
-        if (persistedChildBoard == null) {
-          kafka.addTask(consumeLevel + 1, child, canonicalState);
-        } else {
-          LOGGER.debug("Child {} already exists in db", BitSet.valueOf(child));
-          cassandra.addParent(child, canonicalState);
-        }
+        long startChild = System.currentTimeMillis();
+        futures.add(cassandra.addBoardRelation(child, canonicalState));
+        long doneRelation = System.currentTimeMillis();
+        kafka.addTask(child);
+        long doneKafka = System.currentTimeMillis();
+
+        // Accumulate metrics.
+        cassTime += (doneRelation - startChild);
+        kafkaTime += (doneKafka - doneRelation);
       }
-      kafka.flush();
-    } else {
-      // This is a leaf state, so the game ends (for this path) with however many pegs are left.
-      cassandra.updateBestResult(canonicalState, (byte) stateBitSet.cardinality());
+      long startCass = System.currentTimeMillis();
+      futures.addAll(cassandra.storeBoard(b.getState()));
+      long endCass = System.currentTimeMillis();
+      cassTime += (endCass - startCass);
+
+      // Flush (asynchronously) to Kafka.
+      CompletableFuture<Long> kafkaFlushFuture =
+          CompletableFuture.supplyAsync(
+              () -> {
+                kafka.flush();
+                return System.currentTimeMillis() - endCass;
+              });
+
+      // Wait for all C* ops to complete.
+      startCass = System.currentTimeMillis();
+      futures.forEach(stage -> stage.toCompletableFuture().join());
+      cassTime += (System.currentTimeMillis() - startCass);
+
+      // Now wait for the flush to complete.
+      Long flushTime = kafkaFlushFuture.get();
+      kafkaTime += flushTime;
+
+      metrics.put("cassUpdate", cassTime);
+      metrics.put("kafkaUpdate", kafkaTime);
     }
   }
 
-  private void addInitialBoardTask() {
-    Board initial = Board.initial();
-    kafka.addTask(1, ByteBuffer.wrap(initial.getState().toByteArray()), null);
-    consumeLevel = 1;
-    kafka.flush();
-  }
-
-  private void run() {
+  private void run() throws ExecutionException, InterruptedException {
     // Now consume "tasks" from Kafka, where each task involves the following:
     // * Calculate the list of possible next moves from the current board.
-    // * Add a row in C* with the current board, its children, and its parent.
+    // * Add rows in C* with the child,current mappings.
+    // * Add a row in C* for the current board, to declare that it's done processing.
     // * For each child, add a task in Kafka.
-    int processedCount = 0;
-    //    for (int ctr = 0; ctr < 10; ++ctr) {
-    while (processedCount < 500) {
-      Collection<BoardTask> tasks = kafka.consumeTasks(consumeLevel);
+    //
+    // processRecord does most of the work.
+    Map<String, Long> metrics = new LinkedHashMap<>();
+    //    for (int ctr = 0; ctr < 100 && !stopped.get(); ++ctr) {
+    //    while (processedCount < 500 && !stopped) {
+    while (!stopped.get()) {
+      metrics.clear();
+      long start = System.currentTimeMillis();
+      Collection<BoardTask> tasks = kafka.consumeTasks();
+      metrics.put("kafkaPull", System.currentTimeMillis() - start);
       if (tasks.isEmpty()) {
-        System.out.printf("Completed level %d!%n", consumeLevel);
-        consumeLevel++;
-        if (consumeLevel == Board.SLOTS) {
-          // Completed last level. We're done!
-          break;
-        }
+        // No tasks found; try again!
         continue;
       }
       for (BoardTask task : tasks) {
-        processRecord(task.getState(), task.getParent());
-        processedCount++;
+        // TODO: This is actually wrong if there are multiple tasks, since metrics values are
+        // replaced in each
+        // iteration. Also, if there are multiple tasks, we wouldn't want to join on the async tasks
+        // in processRecord.
+        // We'd want to collect all the futures here and then join the accumulated futures across
+        // tasks.
+        processRecord(task.getState(), metrics);
+      }
+      kafka.commitAsync();
+      // Log the final stats.
+      if (LOGGER.isInfoEnabled()) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("taskCount: ").append(tasks.size());
+        metrics.forEach((name, value) -> sb.append("  ").append(name).append(": ").append(value));
+        LOGGER.info(sb.toString());
       }
     }
   }
@@ -118,29 +173,21 @@ public class Main {
     }
   }
 
-  public static void main(String[] args) {
-    if (args.length != 1) {
-      System.err.println("Usage: solitaire-solver <client-id>");
+  private void stop() {
+    stopped.set(true);
+  }
+
+  public static void main(String[] args) throws ExecutionException, InterruptedException {
+    if (args.length != 4) {
+      System.err.println(
+          "Usage: solitaire-solver <client-id> <kafka-servers> <topic-name> <c*-seed>");
     }
-    Main main = new Main(args[0]);
-
-    // Get the ball rolling by pushing a task to Kafka (the initial state of the board)
-    if ("ij1".equals(args[0])) {
-      main.addInitialBoardTask();
+    Main main = new Main(args[0], args[1], args[2], args[3]);
+    try {
+      Runtime.getRuntime().addShutdownHook(new Thread(main::stop));
+      main.run();
+    } finally {
+      main.close();
     }
-
-    main.run();
-
-    //noinspection ConstantConditions
-    if (false) {
-      @SuppressWarnings("UnusedAssignment")
-      List<Collection<PersistedBoard>> allBoards = main.cassandra.getAllPersistedBoards();
-      Visualization.renderBoards(allBoards.get(0), 300, 100);
-      Visualization.renderBoards(allBoards.get(1), 200, 300);
-      Visualization.renderBoards(allBoards.get(2), 100, 500);
-    }
-
-    Runtime.getRuntime().addShutdownHook(new Thread(main::close));
-    main.close();
   }
 }
