@@ -8,7 +8,9 @@
   <name>solitaire-solver</name>
   <url>http://maven.apache.org</url>
   <properties>
-    <java.version>1.8</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <java.version>11</java.version>
     <logback.version>1.2.3</logback.version>
     <junit.version>5.2.0</junit.version>
     <assertj.version>3.11.0</assertj.version>
@@ -83,18 +85,20 @@
     </pluginManagement>
     <plugins>
       <plugin>
+	<groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.7.0</version>
+        <version>3.8.0</version>
         <configuration>
           <source>${java.version}</source>
           <target>${java.version}</target>
-          <optimize>true</optimize>
-          <showDeprecation>true</showDeprecation>
-          <showWarnings>true</showWarnings>
-          <failOnWarning>false</failOnWarning>
-          <compilerId>javac-with-errorprone</compilerId>
-          <forceJavacCompilerUse>true</forceJavacCompilerUse>
+          <!-- <optimize>true</optimize> -->
+	  <!-- <showDeprecation>false</showDeprecation> -->
+          <!-- <showWarnings>false</showWarnings> -->
+	  <!-- <failOnWarning>false</failOnWarning> -->
+	  <!-- <compilerId>javac-with-errorprone</compilerId> -->
+	  <!-- <forceJavacCompilerUse>true</forceJavacCompilerUse> -->
         </configuration>
+	<!--
         <dependencies>
           <dependency>
             <groupId>org.codehaus.plexus</groupId>
@@ -106,7 +110,7 @@
             <artifactId>error_prone_core</artifactId>
             <version>2.2.0</version>
           </dependency>
-        </dependencies>
+	</dependencies> -->
       </plugin>
       <plugin>
         <groupId>com.coveo</groupId>
