@@ -3,7 +3,6 @@ package com.svtlabs.jedis;
 import static com.svtlabs.jedis.EncodingUtil.*;
 
 import com.svtlabs.Board;
-
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.util.BitSet;
@@ -19,6 +18,7 @@ public class RedisClient {
   private static byte[] PENDING;
   private static byte[] WORKING;
   private static byte[] COMPLETED;
+
   static {
     try {
       PENDING = "pending".getBytes(Protocol.CHARSET);
@@ -29,6 +29,7 @@ public class RedisClient {
       e.printStackTrace();
     }
   }
+
   private static final int POLL_TIMEOUT = 2;
 
   private final String clientId;
