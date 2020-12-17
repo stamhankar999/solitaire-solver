@@ -1,17 +1,17 @@
-package com.svtlabs;
+package com.svtlabs.jedis;
 
 import java.nio.ByteBuffer;
 import org.jetbrains.annotations.NotNull;
 
-class BoardTask {
+public class BoardTask {
   @NotNull private final ByteBuffer state;
 
-  BoardTask(@NotNull ByteBuffer state) {
+  public BoardTask(@NotNull ByteBuffer state) {
     this.state = state;
   }
 
   @NotNull
-  ByteBuffer getState() {
+  public ByteBuffer getState() {
     return state;
   }
 }

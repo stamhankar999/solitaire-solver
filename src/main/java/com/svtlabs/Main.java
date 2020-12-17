@@ -1,9 +1,11 @@
 package com.svtlabs;
 
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
+import com.svtlabs.jedis.BoardTask;
+import com.svtlabs.jedis.RedisClient;
+import com.svtlabs.jedis.RedisClient.BatchWriter;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -13,6 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,31 +32,36 @@ import org.slf4j.LoggerFactory;
 public class Main {
   private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   @NotNull private final CassandraClient cassandra;
-  @NotNull private final KafkaClient kafka;
+  @NotNull private final RedisClient redis;
   @NotNull private final AtomicBoolean stopped;
 
   private Main(
-      @NotNull String clientId,
-      @NotNull String bootstrapServers,
-      @NotNull String topicName,
-      @NotNull String cassandraSeed) {
+      @NotNull String clientId, @NotNull String redisTarget, @NotNull String cassandraSeed) {
     cassandra = new CassandraClient(clientId, cassandraSeed);
-    kafka = new KafkaClient(clientId, bootstrapServers, topicName);
+    redis = new RedisClient(clientId, redisTarget);
     stopped = new AtomicBoolean();
+  }
+
+  private long completeTask(Board b) {
+    long startRedis = System.currentTimeMillis();
+    BatchWriter redisWriter = redis.createBatchWriter();
+    redisWriter.completed(b.getState());
+    redisWriter.execute();
+    return System.currentTimeMillis() - startRedis;
   }
 
   private void processRecord(@NotNull ByteBuffer canonicalState, Map<String, Long> metrics)
       throws ExecutionException, InterruptedException {
-    // Compute child moves and send to C*.
+    // Compute child moves and send to Redis/C*.
 
-    // Check if this state is already stored in C*.
+    // Check if this state has already been processed.
     long start = System.currentTimeMillis();
-    Board persistedBoard = cassandra.getBoard(canonicalState);
+    boolean found = redis.boardExists(canonicalState);
     metrics.put("boardCheck", System.currentTimeMillis() - start);
-    if (persistedBoard != null) {
-      LOGGER.info(
-          "Encountered board that has already been processed at level {}!",
-          persistedBoard.getLevel());
+    if (found) {
+      Board b = new Board(canonicalState);
+      LOGGER.info("Encountered board that has already been processed at level {}!", b.getLevel());
+      metrics.put("redisUpdate", completeTask(b));
       return;
     }
 
@@ -62,13 +70,15 @@ public class Main {
     // Check if this is a winning board.
     if (b.getLevel() == Board.SLOTS - 1) {
       LOGGER.info("We have a winner!");
-      List<CompletionStage<? extends AsyncResultSet>> futures = new ArrayList<>();
+      // Record this state as completed in redis + stats.
+      CompletableFuture<Long> redisTimeFuture =
+          CompletableFuture.supplyAsync(() -> completeTask(b));
+
+      // Record the winning board in C*.
       long startCass = System.currentTimeMillis();
-      futures.add(cassandra.storeWinningBoard(b.getState()));
-      futures.addAll(cassandra.storeBoard(b.getState()));
-      // Wait for all C* ops to complete.
-      futures.forEach(stage -> stage.toCompletableFuture().join());
+      cassandra.storeWinningBoard(b.getState()).toCompletableFuture().join();
       metrics.put("cassUpdate", System.currentTimeMillis() - startCass);
+      metrics.put("redisUpdate", redisTimeFuture.get());
       return;
     }
 
@@ -82,53 +92,63 @@ public class Main {
 
     // Add child->parent mappings to C*, and add child tasks to Kafka.
     long cassTime = 0;
-    long kafkaTime = 0;
+    long redisTime = 0;
+    BatchWriter redisWriter = redis.createBatchWriter();
     if (children != null) {
-      List<CompletionStage<? extends AsyncResultSet>> futures = new ArrayList<>();
+      List<CompletionStage<? extends AsyncResultSet>> futureStages = new ArrayList<>();
       for (ByteBuffer child : children) {
         long startChild = System.currentTimeMillis();
-        futures.add(cassandra.addBoardRelation(child, canonicalState));
+        futureStages.add(cassandra.addBoardRelation(child, canonicalState));
         long doneRelation = System.currentTimeMillis();
-        kafka.addTask(child);
-        long doneKafka = System.currentTimeMillis();
+        redisWriter.addTask(child);
+        long doneRedis = System.currentTimeMillis();
 
         // Accumulate metrics.
         cassTime += (doneRelation - startChild);
-        kafkaTime += (doneKafka - doneRelation);
+        redisTime += (doneRedis - doneRelation);
       }
-      long startCass = System.currentTimeMillis();
-      futures.addAll(cassandra.storeBoard(b.getState()));
-      long endCass = System.currentTimeMillis();
-      cassTime += (endCass - startCass);
 
-      // Flush (asynchronously) to Kafka.
-      CompletableFuture<Long> kafkaFlushFuture =
-          CompletableFuture.supplyAsync(
-              () -> {
-                kafka.flush();
-                return System.currentTimeMillis() - endCass;
-              });
+      long asyncCassStartTime = System.currentTimeMillis();
+      List<CompletableFuture<? extends AsyncResultSet>> futures =
+          futureStages
+              .stream()
+              .map(CompletionStage<? extends AsyncResultSet>::toCompletableFuture)
+              .collect(Collectors.toList());
+      CompletableFuture<Long> asyncCassFinishTimeFuture =
+          CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+              .thenApply(
+                  (x) -> {
+                    return System.currentTimeMillis();
+                  });
+
+      long startCompleted = System.currentTimeMillis();
+      redisWriter.completed(b.getState());
+      redisWriter.execute();
+      long endCompleted = System.currentTimeMillis();
+      redisTime += (endCompleted - startCompleted);
 
       // Wait for all C* ops to complete.
-      startCass = System.currentTimeMillis();
-      futures.forEach(stage -> stage.toCompletableFuture().join());
-      cassTime += (System.currentTimeMillis() - startCass);
-
-      // Now wait for the flush to complete.
-      Long flushTime = kafkaFlushFuture.get();
-      kafkaTime += flushTime;
-
-      metrics.put("cassUpdate", cassTime);
-      metrics.put("kafkaUpdate", kafkaTime);
+      long asyncCassFinishTime = asyncCassFinishTimeFuture.get();
+      cassTime += (asyncCassFinishTime - asyncCassStartTime);
+    } else {
+      // Terminal state, but not a winner.
+      long startCompleted = System.currentTimeMillis();
+      redisWriter.completed(b.getState());
+      redisWriter.execute();
+      long endCompleted = System.currentTimeMillis();
+      redisTime += (endCompleted - startCompleted);
     }
+
+    metrics.put("cassUpdate", cassTime);
+    metrics.put("redisUpdate", redisTime);
   }
 
   private void run() throws ExecutionException, InterruptedException {
-    // Now consume "tasks" from Kafka, where each task involves the following:
+    // Now consume "tasks" from Redis, where each task involves the following:
     // * Calculate the list of possible next moves from the current board.
     // * Add rows in C* with the child,current mappings.
-    // * Add a row in C* for the current board, to declare that it's done processing.
-    // * For each child, add a task in Kafka.
+    // * Add a key in Redis for the current board, to declare that it's done processing.
+    // * For each child, add a task in Redis.
     //
     // processRecord does most of the work.
     Map<String, Long> metrics = new LinkedHashMap<>();
@@ -137,26 +157,18 @@ public class Main {
     while (!stopped.get()) {
       metrics.clear();
       long start = System.currentTimeMillis();
-      Collection<BoardTask> tasks = kafka.consumeTasks();
-      metrics.put("kafkaPull", System.currentTimeMillis() - start);
-      if (tasks.isEmpty()) {
-        // No tasks found; try again!
+      BoardTask task = redis.nextTask();
+      if (task == null) {
+        // No task found. Loop around and try again.
         continue;
       }
-      for (BoardTask task : tasks) {
-        // TODO: This is actually wrong if there are multiple tasks, since metrics values are
-        // replaced in each
-        // iteration. Also, if there are multiple tasks, we wouldn't want to join on the async tasks
-        // in processRecord.
-        // We'd want to collect all the futures here and then join the accumulated futures across
-        // tasks.
-        processRecord(task.getState(), metrics);
-      }
-      kafka.commitAsync();
+      metrics.put("taskPull", System.currentTimeMillis() - start);
+      processRecord(task.getState(), metrics);
+
       // Log the final stats.
       if (LOGGER.isInfoEnabled()) {
         StringBuilder sb = new StringBuilder();
-        sb.append("taskCount: ").append(tasks.size());
+        sb.append("totalTime: ").append(System.currentTimeMillis() - start);
         metrics.forEach((name, value) -> sb.append("  ").append(name).append(": ").append(value));
         LOGGER.info(sb.toString());
       }
@@ -166,7 +178,7 @@ public class Main {
   private void close() {
     try {
       cassandra.close();
-      kafka.close();
+      redis.close();
     } catch (RuntimeException e) {
       // swallow
     }
@@ -177,11 +189,11 @@ public class Main {
   }
 
   public static void main(String[] args) throws ExecutionException, InterruptedException {
-    if (args.length != 4) {
-      System.err.println(
-          "Usage: solitaire-solver <client-id> <kafka-servers> <topic-name> <c*-seed>");
+    if (args.length != 3) {
+      System.err.println("Usage: solitaire-solver <client-id> <redis-target> <c*-seed>");
+      System.exit(1);
     }
-    Main main = new Main(args[0], args[1], args[2], args[3]);
+    Main main = new Main(args[0], args[1], args[2]);
     try {
       Runtime.getRuntime().addShutdownHook(new Thread(main::stop));
       main.run();

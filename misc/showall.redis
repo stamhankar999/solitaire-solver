@@ -1,0 +1,10 @@
+echo "pending"
+lrange pending 0 99
+echo "working"
+lrange working 0 99
+echo "completed"
+hgetall completed
+echo "level_stats"
+hgetall level_stats
+echo "client_stats"
+hgetall client_stats
