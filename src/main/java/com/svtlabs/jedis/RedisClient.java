@@ -3,6 +3,8 @@ package com.svtlabs.jedis;
 import static com.svtlabs.jedis.EncodingUtil.*;
 
 import com.svtlabs.Board;
+
+import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.util.BitSet;
 import org.jetbrains.annotations.NotNull;
@@ -10,12 +12,23 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.Protocol;
 
 public class RedisClient {
   private static final Logger LOGGER = LoggerFactory.getLogger(RedisClient.class);
-  private static final String PENDING = "pending";
-  private static final String WORKING = "working";
-  private static final String COMPLETED = "completed";
+  private static byte[] PENDING;
+  private static byte[] WORKING;
+  private static byte[] COMPLETED;
+  static {
+    try {
+      PENDING = "pending".getBytes(Protocol.CHARSET);
+      WORKING = "working".getBytes(Protocol.CHARSET);
+      COMPLETED = "completed".getBytes(Protocol.CHARSET);
+    } catch (UnsupportedEncodingException e) {
+      // This should never happen.
+      e.printStackTrace();
+    }
+  }
   private static final int POLL_TIMEOUT = 2;
 
   private final String clientId;
@@ -47,16 +60,15 @@ public class RedisClient {
   }
 
   public BoardTask nextTask() {
-    String msg = jedis.brpoplpush(PENDING, WORKING, POLL_TIMEOUT);
+    byte[] msg = jedis.brpoplpush(PENDING, WORKING, POLL_TIMEOUT);
     if (msg == null) {
       return null;
     }
-    return new BoardTask(decodeToByteBuffer(msg));
+    return new BoardTask(ByteBuffer.wrap(msg));
   }
 
   public boolean boardExists(ByteBuffer state) {
-    String msg = encode(state);
-    return jedis.hexists(COMPLETED, msg);
+    return jedis.hexists(COMPLETED, state.array());
   }
 
   public BatchWriter createBatchWriter() {
@@ -76,9 +88,14 @@ public class RedisClient {
 
     public void completed(BitSet state) {
       int level = Board.SLOTS - state.cardinality();
-      String value = encode(state);
-      pipeline.hset(COMPLETED, value, clientId);
-      pipeline.lrem(WORKING, 1, value);
+
+      try {
+        pipeline.hset(COMPLETED, state.toByteArray(), clientId.getBytes(Protocol.CHARSET));
+      } catch (UnsupportedEncodingException e) {
+        // This should never happen.
+        e.printStackTrace();
+      }
+      pipeline.lrem(WORKING, 1, state.toByteArray());
       pipeline.hincrBy(LEVEL_STATS, String.valueOf(level), 1);
       pipeline.hincrBy(CLIENT_STATS, clientId, 1);
     }
@@ -92,8 +109,7 @@ public class RedisClient {
     }
 
     public void addTask(byte[] child) {
-      String task = encode(child);
-      pipeline.lpush(PENDING, task);
+      pipeline.lpush(PENDING, child);
     }
   }
 }
