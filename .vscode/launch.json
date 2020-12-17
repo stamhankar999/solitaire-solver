@@ -1,0 +1,72 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Debug (Launch) - Current File",
+            "request": "launch",
+            "mainClass": "${file}"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-CassandraClient<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.CassandraClient",
+            "projectName": "solitaire-solver"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-InitialBoard<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.InitialBoard",
+            "projectName": "solitaire-solver"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-Main<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.Main",
+            "projectName": "solitaire-solver",
+            "args": ["rads-mac", "/tmp/redis.sock", "192.168.86.24"]
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-MoveHelper<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.MoveHelper",
+            "projectName": "solitaire-solver"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-RedisPlay<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.RedisPlay",
+            "projectName": "solitaire-solver"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-RenderedBoard<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.RenderedBoard",
+            "projectName": "solitaire-solver"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-Scratch<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.Scratch",
+            "projectName": "solitaire-solver",
+            "args": "/tmp/redis.sock"
+        },
+        {
+            "type": "java",
+            "name": "Debug (Launch)-WinnerRenderer<solitaire-solver>",
+            "request": "launch",
+            "mainClass": "com.svtlabs.WinnerRenderer",
+            "projectName": "solitaire-solver"
+        }
+    ]
+}

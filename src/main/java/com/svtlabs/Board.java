@@ -14,7 +14,7 @@ import org.jetbrains.annotations.Nullable;
 
 public class Board implements Iterable<Board> {
 
-  static final int SLOTS = 37;
+  public static final int SLOTS = 37;
   @NotNull private final BitSet state;
   private final int level;
 
