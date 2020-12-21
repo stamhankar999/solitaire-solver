@@ -1,6 +1,7 @@
 package com.svtlabs;
 
 import com.svtlabs.jedis.RedisClient;
+
 import java.util.BitSet;
 
 public class Scratch {
@@ -10,9 +11,8 @@ public class Scratch {
       System.exit(1);
     }
 
-    RedisClient redis = new RedisClient("dummy", args[0]);
+    RedisClient redis = new RedisClient(args[0]);
 
-    // KafkaClient kafka = new KafkaClient(args[0]);
     BitSet state = new BitSet(Board.SLOTS);
     state.set(26);
     state.set(27);

@@ -1,17 +1,27 @@
 package com.svtlabs.jedis;
 
-import static com.svtlabs.jedis.EncodingUtil.*;
-
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.svtlabs.Board;
+import com.svtlabs.Metrics;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.Protocol;
+import redis.clients.jedis.Response;
 
 public class RedisClient {
   private static final Logger LOGGER = LoggerFactory.getLogger(RedisClient.class);
@@ -35,37 +45,66 @@ public class RedisClient {
   private final String clientId;
   private final UdsJedisFactory jedisFactory;
   private final Jedis jedis;
+  private final int maxBoardsInTask;
 
-  public RedisClient(String clientId, String pipePath) {
+  /** This constructor is only used in small programs that create an initial task. */
+  public RedisClient(String connectString) {
+    this("dummy", connectString, 10);
+  }
+
+  public RedisClient(String clientId, String connectString, int maxBoardsInTask) {
     this.clientId = clientId;
-    jedisFactory = new UdsJedisFactory(pipePath);
-    jedis = jedisFactory.create();
+    if (connectString.contains("/")) {
+      // This is a pipe path.
+      jedisFactory = new UdsJedisFactory(connectString);
+      jedis = jedisFactory.create();
+    } else {
+      // This must be a hostname / ip.
+      jedisFactory = null;
+      jedis = new Jedis(connectString);
+    }
+    this.maxBoardsInTask = maxBoardsInTask;
   }
 
   public void addTask(@NotNull ByteBuffer stateBytes) {
-    addTask(stateBytes.array());
+    BatchWriter batchWriter = createBatchWriter();
+    batchWriter.addTask(stateBytes);
+    batchWriter.execute(new Metrics(), null);
   }
 
   public void addTask(@NotNull BitSet stateBytes) {
-    addTask(stateBytes.toByteArray());
+    addTask(ByteBuffer.wrap(stateBytes.toByteArray()));
   }
 
-  public void addTask(@NotNull byte[] stateBytes) {
-    BatchWriter batchWriter = createBatchWriter();
-    batchWriter.addTask(stateBytes);
-    batchWriter.execute();
+  public Map<Board, Boolean> checkExistence(List<Board> task) {
+    Map<Board, Response<Boolean>> results = new LinkedHashMap<>();
+    Pipeline pipeline = jedis.pipelined();
+    task.forEach(b -> results.put(b, pipeline.hexists(COMPLETED, b.getState().toByteArray())));
+    pipeline.sync();
+
+    return Maps.transformValues(results, Response::get);
   }
 
   public void close() {
     jedis.close();
   }
 
-  public BoardTask nextTask() {
-    byte[] msg = jedis.brpoplpush(PENDING, WORKING, POLL_TIMEOUT);
-    if (msg == null) {
+  public ByteBuffer nextTask(List<Board> boards) {
+    byte[] task = jedis.brpoplpush(PENDING, WORKING, POLL_TIMEOUT);
+    if (task == null) {
       return null;
     }
-    return new BoardTask(ByteBuffer.wrap(msg));
+
+    ByteBuffer taskBuffer = ByteBuffer.wrap(task);
+    while (taskBuffer.hasRemaining()) {
+      byte boardLen = taskBuffer.get();
+      byte[] board = new byte[boardLen];
+      taskBuffer.get(board);
+      boards.add(new Board(BitSet.valueOf(board)));
+    }
+
+    taskBuffer.rewind();
+    return taskBuffer;
   }
 
   public boolean boardExists(ByteBuffer state) {
@@ -73,44 +112,97 @@ public class RedisClient {
   }
 
   public BatchWriter createBatchWriter() {
-    return new BatchWriter(clientId, jedis);
+    return new BatchWriter(clientId, jedis, maxBoardsInTask);
   }
 
   public static class BatchWriter {
     private static final String CLIENT_STATS = "client_stats";
     private static final String LEVEL_STATS = "level_stats";
+    private static final String ALREADY_SEEN_STATS = "already_seen_stats";
     private final String clientId;
     private final Pipeline pipeline;
+    private final Set<ByteBuffer> newBoards;
+    private final int maxBoardsInTask;
+    private final Map<Integer, Integer> levelStats;
+    private final Map<Integer, Integer> alreadySeenStats;
+    private int totalCompleted;
 
-    public BatchWriter(String clientId, Jedis jedis) {
+    public BatchWriter(String clientId, Jedis jedis, int maxBoardsInTask) {
+      levelStats = new HashMap<>();
+      alreadySeenStats = new HashMap<>();
       this.clientId = clientId;
       this.pipeline = jedis.pipelined();
+      newBoards = new LinkedHashSet<>();
+      this.maxBoardsInTask = maxBoardsInTask;
+      totalCompleted = 0;
     }
 
-    public void completed(BitSet state) {
-      int level = Board.SLOTS - state.cardinality();
-
-      try {
-        pipeline.hset(COMPLETED, state.toByteArray(), clientId.getBytes(Protocol.CHARSET));
-      } catch (UnsupportedEncodingException e) {
-        // This should never happen.
-        e.printStackTrace();
+    public void completed(Board board, boolean alreadyCompleted) {
+      // TODO: For statistical updates, it shouldn't add the command to the pipeline,
+      // but rather accumulate in member counters. Then execute should do the
+      // appropriate
+      // incrBy's.
+      byte[] boardState = board.getState().toByteArray();
+      if (alreadyCompleted) {
+        int stat = alreadySeenStats.getOrDefault(board.getLevel(), 0);
+        alreadySeenStats.put(board.getLevel(), stat + 1);
+      } else {
+        try {
+          pipeline.hset(COMPLETED, boardState, clientId.getBytes(Protocol.CHARSET));
+        } catch (UnsupportedEncodingException e) {
+          // This should never happen.
+          e.printStackTrace();
+        }
       }
-      pipeline.lrem(WORKING, 1, state.toByteArray());
-      pipeline.hincrBy(LEVEL_STATS, String.valueOf(level), 1);
-      pipeline.hincrBy(CLIENT_STATS, clientId, 1);
+
+      int stat = levelStats.getOrDefault(board.getLevel(), 0);
+      levelStats.put(board.getLevel(), stat + 1);
+      totalCompleted++;
     }
 
-    public void execute() {
-      pipeline.sync();
+    public void execute(Metrics metrics, ByteBuffer rawTask) {
+      metrics.measure(
+          "redis.prep",
+          () -> {
+            // Remove the task from the WORKING queue.
+            if (rawTask != null) {
+              pipeline.lrem(WORKING, 1, rawTask.array());
+            }
+
+            // Coalesce the new boards into groups of X to create multi-board task(s).
+            Iterable<List<ByteBuffer>> groups = Iterables.partition(newBoards, maxBoardsInTask);
+            for (List<ByteBuffer> chunk : groups) {
+              // Walk through the chunk to get the byte lengths of each buffer, to find out
+              // how many
+              // bytes we need in our final task (of the form size,chunk,size,chunk,...).
+              int totalBytes =
+                  chunk
+                      .stream()
+                      .mapToInt(
+                          buffer -> {
+                            return buffer.array().length + 1;
+                          })
+                      .sum();
+              ByteBuffer task = ByteBuffer.allocate(totalBytes);
+              chunk.forEach(
+                  buffer -> {
+                    task.put((byte) buffer.array().length);
+                    task.put(buffer);
+                  });
+              pipeline.lpush(PENDING, task.array());
+            }
+            levelStats.forEach(
+                (level, count) -> pipeline.hincrBy(LEVEL_STATS, String.valueOf(level), count));
+            alreadySeenStats.forEach(
+                (level, count) -> pipeline.hincrBy(ALREADY_SEEN_STATS, String.valueOf(level), count));
+              pipeline.hincrBy(CLIENT_STATS, clientId, totalCompleted);
+          });
+
+      metrics.measure("redis.update", () -> pipeline.sync());
     }
 
     public void addTask(ByteBuffer child) {
-      addTask(child.array());
-    }
-
-    public void addTask(byte[] child) {
-      pipeline.lpush(PENDING, child);
+      newBoards.add(child);
     }
   }
 }

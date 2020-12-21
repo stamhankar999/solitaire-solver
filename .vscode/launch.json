@@ -22,7 +22,11 @@
             "name": "Debug (Launch)-InitialBoard<solitaire-solver>",
             "request": "launch",
             "mainClass": "com.svtlabs.InitialBoard",
-            "projectName": "solitaire-solver"
+            "projectName": "solitaire-solver",
+            "args": [
+                "/tmp/redis.sock",
+                "18"
+            ]
         },
         {
             "type": "java",
@@ -30,7 +34,12 @@
             "request": "launch",
             "mainClass": "com.svtlabs.Main",
             "projectName": "solitaire-solver",
-            "args": ["rads-mac", "/tmp/redis.sock", "192.168.86.24"]
+            "args": [
+                "rads-mac",
+                "/tmp/redis.sock",
+                "192.168.86.24",
+                "10"
+            ]
         },
         {
             "type": "java",
@@ -66,7 +75,11 @@
             "name": "Debug (Launch)-WinnerRenderer<solitaire-solver>",
             "request": "launch",
             "mainClass": "com.svtlabs.WinnerRenderer",
-            "projectName": "solitaire-solver"
+            "projectName": "solitaire-solver",
+            "args": [
+                "dummy",
+                "192.168.86.24"
+            ]
         }
     ]
 }

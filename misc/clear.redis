@@ -3,3 +3,4 @@ del working
 del completed
 del level_stats
 del client_stats
+del already_seen_stats

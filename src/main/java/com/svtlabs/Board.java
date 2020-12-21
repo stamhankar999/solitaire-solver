@@ -27,12 +27,12 @@ public class Board implements Iterable<Board> {
     return new Board(state);
   }
 
-  Board(@NotNull BitSet state) {
+  public Board(@NotNull BitSet state) {
     this.state = state;
     level = Board.SLOTS - state.cardinality();
   }
 
-  Board(@NotNull ByteBuffer state) {
+  public Board(@NotNull ByteBuffer state) {
     this(BitSet.valueOf(state));
   }
 
@@ -50,7 +50,7 @@ public class Board implements Iterable<Board> {
   }
 
   @NotNull
-  BitSet getState() {
+  public BitSet getState() {
     return state;
   }
 
