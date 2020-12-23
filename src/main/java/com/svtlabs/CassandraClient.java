@@ -15,14 +15,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 class CassandraClient {
-  private final PreparedStatement insertBoardStatement;
   private final PreparedStatement insertWinningBoardStatement;
-  private final PreparedStatement selectBoardStatement;
-  private final PreparedStatement clientMetricsStatement;
-  private final PreparedStatement levelMetricsStatement;
   private final PreparedStatement insertRelationStatement;
   private final PreparedStatement selectParentsStatement;
 
@@ -35,23 +30,12 @@ class CassandraClient {
     // Connect to C*.
 
     session = new CqlSessionBuilder().addContactPoint(new InetSocketAddress(seed, 9042)).build();
-    insertBoardStatement =
-        session.prepare(
-            "INSERT INTO solitaire.boards (state, client_id) VALUES (:state, :client_id)");
     insertWinningBoardStatement =
         session.prepare("INSERT INTO solitaire.winning_boards (state) VALUES (:state)");
     insertRelationStatement =
         session.prepare("INSERT INTO solitaire.board_rel (child, parent) VALUES (:child, :parent)");
-    selectBoardStatement =
-        session.prepare("SELECT state FROM solitaire.boards WHERE state = :state");
     selectParentsStatement =
         session.prepare("SELECT parent FROM solitaire.board_rel WHERE child = :child");
-    clientMetricsStatement =
-        session.prepare(
-            "UPDATE solitaire.client_metrics SET boards_processed = boards_processed + 1 WHERE client_id = :client_id");
-    levelMetricsStatement =
-        session.prepare(
-            "UPDATE solitaire.level_metrics SET boards_processed = boards_processed + 1 WHERE level = :level");
   }
 
   CompletionStage<? extends AsyncResultSet> addBoardRelation(ByteBuffer child, ByteBuffer parent) {
@@ -60,41 +44,12 @@ class CassandraClient {
     return session.executeAsync(boundStatementBuilder.build());
   }
 
-  Collection<CompletionStage<? extends AsyncResultSet>> storeBoard(@NotNull BitSet state) {
-    List<CompletionStage<? extends AsyncResultSet>> futures = new ArrayList<>();
-    byte level = (byte) (Board.SLOTS - state.cardinality());
-    BoundStatementBuilder boundStatementBuilder = insertBoardStatement.boundStatementBuilder();
-    ByteBuffer stateBuffer = ByteBuffer.wrap(state.toByteArray());
-    boundStatementBuilder.setByteBuffer("state", stateBuffer).setString("client_id", clientId);
-    futures.add(session.executeAsync(boundStatementBuilder.build()));
-
-    boundStatementBuilder =
-        clientMetricsStatement.boundStatementBuilder().setString("client_id", clientId);
-    futures.add(session.executeAsync(boundStatementBuilder.build()));
-
-    boundStatementBuilder = levelMetricsStatement.boundStatementBuilder().setByte("level", level);
-    futures.add(session.executeAsync(boundStatementBuilder.build()));
-    return futures;
-  }
-
   CompletionStage<? extends AsyncResultSet> storeWinningBoard(@NotNull BitSet state) {
     BoundStatementBuilder boundStatementBuilder =
         insertWinningBoardStatement.boundStatementBuilder();
     ByteBuffer stateBuffer = ByteBuffer.wrap(state.toByteArray());
     boundStatementBuilder.setByteBuffer("state", stateBuffer);
     return session.executeAsync(boundStatementBuilder.build());
-  }
-
-  @Nullable
-  Board getBoard(@NotNull ByteBuffer state) {
-    ResultSet rs =
-        session.execute(
-            selectBoardStatement.boundStatementBuilder().setByteBuffer("state", state).build());
-    Row row = rs.one();
-    if (row == null) {
-      return null;
-    }
-    return rowToBoard(row, "state");
   }
 
   public Collection<Board> getWinningBoards() {
@@ -117,32 +72,6 @@ class CassandraClient {
     }
     return parents;
   }
-
-  //  /**
-  //   * Get all persisted boards from the db and group them by level number. NOTE: level N boards
-  // are
-  //   * stored in index N-1.
-  //   */
-  //  @SuppressWarnings("unused")
-  //  @NotNull
-  //  List<Collection<Board>> getAllBoards() {
-  //    ResultSet rs = session.execute("SELECT * FROM solitaire.boards");
-  //    List<Collection<Board>> boards = new ArrayList<>(Board.SLOTS);
-  //    for (int i = 0; i < Board.SLOTS; i++) {
-  //      boards.add(null);
-  //    }
-  //
-  //    for (Row row : rs) {
-  //      Board board = rowToBoard(row);
-  //      Collection<Board> coll = boards.get(board.getLevel() - 1);
-  //      if (coll == null) {
-  //        coll = new ArrayList<>();
-  //        boards.set(board.getLevel() - 1, coll);
-  //      }
-  //      coll.add(board);
-  //    }
-  //    return boards;
-  //  }
 
   @NotNull
   private Board rowToBoard(Row row, String fieldName) {
@@ -183,7 +112,6 @@ class CassandraClient {
     ByteBuffer b2 = ByteBuffer.wrap(b2Bits.toByteArray());
     ByteBuffer b3 = ByteBuffer.wrap(b3Bits.toByteArray());
 
-    client.storeBoard(b1Bits);
     client.addBoardRelation(b3, b2);
 
     client.close();

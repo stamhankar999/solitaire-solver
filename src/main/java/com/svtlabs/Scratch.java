@@ -1,7 +1,6 @@
 package com.svtlabs;
 
 import com.svtlabs.jedis.RedisClient;
-
 import java.util.BitSet;
 
 public class Scratch {

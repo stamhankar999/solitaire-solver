@@ -6,7 +6,6 @@ import com.svtlabs.Board;
 import com.svtlabs.Metrics;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -14,7 +13,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,8 +192,9 @@ public class RedisClient {
             levelStats.forEach(
                 (level, count) -> pipeline.hincrBy(LEVEL_STATS, String.valueOf(level), count));
             alreadySeenStats.forEach(
-                (level, count) -> pipeline.hincrBy(ALREADY_SEEN_STATS, String.valueOf(level), count));
-              pipeline.hincrBy(CLIENT_STATS, clientId, totalCompleted);
+                (level, count) ->
+                    pipeline.hincrBy(ALREADY_SEEN_STATS, String.valueOf(level), count));
+            pipeline.hincrBy(CLIENT_STATS, clientId, totalCompleted);
           });
 
       metrics.measure("redis.update", () -> pipeline.sync());

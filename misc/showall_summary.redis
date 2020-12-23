@@ -1,0 +1,12 @@
+echo "pending"
+llen pending
+echo "working"
+llen working
+echo "completed"
+hlen completed
+echo "level_stats"
+hgetall level_stats
+echo "client_stats"
+hgetall client_stats
+echo "already_seen_stats"
+hgetall already_seen_stats
