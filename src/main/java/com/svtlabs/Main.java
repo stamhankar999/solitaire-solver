@@ -75,15 +75,16 @@ public class Main {
               return result;
             });
 
-    // Add child->parent mappings to C*, and add child tasks to Kafka.
+    // Add child->parent mappings and child tasks to Redis.
     ByteBuffer canonicalState = ByteBuffer.wrap(b.getState().toByteArray());
     if (children != null) {
       for (ByteBuffer child : children) {
-        cassFutures.add(
-            metrics.measure(
-                "cass.prep",
-                () -> cassandra.addBoardRelation(child, canonicalState).toCompletableFuture()));
-        metrics.measure("redis.prep", () -> redisWriter.addTask(child));
+        metrics.measure(
+            "redis.prep",
+            () -> {
+              redisWriter.addTask(child);
+              redisWriter.addBoardRelation(child, canonicalState);
+            });
       }
     }
   }

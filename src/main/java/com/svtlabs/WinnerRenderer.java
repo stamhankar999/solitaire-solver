@@ -1,15 +1,18 @@
 package com.svtlabs;
 
+import com.svtlabs.jedis.RedisClient;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 
 public class WinnerRenderer {
   public static void main(String[] args) {
-    if (args.length != 2) {
-      System.err.println("Usage: WinnerRenderer <client-id> <cassandra-seed>");
+    if (args.length != 3) {
+      System.err.println("Usage: WinnerRenderer <client-id> <redis-target> <cassandra-seed>");
       System.exit(1);
     }
-    CassandraClient cassandraClient = new CassandraClient(args[0], args[1]);
+    CassandraClient cassandraClient = new CassandraClient(args[0], args[2]);
+    RedisClient redis = new RedisClient(args[1]);
+
     Collection<Board> winners = cassandraClient.getWinningBoards();
 
     int posY = 100;
@@ -21,7 +24,7 @@ public class WinnerRenderer {
         Visualization.renderBoards(row, 100, posY);
         nextRow.clear();
         for (Board b : row) {
-          nextRow.addAll(cassandraClient.getParents(b));
+          nextRow.addAll(redis.getParents(b));
         }
 
         // Swap nextRow and row.

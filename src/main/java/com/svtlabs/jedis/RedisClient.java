@@ -7,7 +7,9 @@ import com.svtlabs.Metrics;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.util.BitSet;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -103,6 +105,17 @@ public class RedisClient {
 
     taskBuffer.rewind();
     return taskBuffer;
+  }
+
+  public Collection<Board> getParents(Board b) {
+    byte[] child = b.getState().toByteArray();
+    Set<byte[]> parentBytes = jedis.smembers(child);
+    Set<Board> parents = new HashSet<>();
+    parentBytes.forEach(
+        bytes -> {
+          parents.add(new Board(BitSet.valueOf(bytes)));
+        });
+    return parents;
   }
 
   public boolean boardExists(ByteBuffer state) {
@@ -202,6 +215,10 @@ public class RedisClient {
 
     public void addTask(ByteBuffer child) {
       newBoards.add(child);
+    }
+
+    public void addBoardRelation(ByteBuffer child, ByteBuffer parent) {
+      pipeline.sadd(child.array(), parent.array());
     }
   }
 }
