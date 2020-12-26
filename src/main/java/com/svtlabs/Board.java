@@ -102,8 +102,7 @@ public class Board implements Iterable<Board> {
 
         List<Move> possibleMoves = MoveHelper.MOVES.get(pos);
         moves =
-            possibleMoves
-                .stream()
+            possibleMoves.stream()
                 .filter(m -> state.get(m.getOver()) && !state.get(m.getTo()))
                 .collect(Collectors.toList());
         if (!moves.isEmpty()) {

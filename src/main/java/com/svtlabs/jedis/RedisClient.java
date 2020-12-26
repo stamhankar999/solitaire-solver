@@ -174,8 +174,7 @@ public class RedisClient {
               // how many
               // bytes we need in our final task (of the form size,chunk,size,chunk,...).
               int totalBytes =
-                  chunk
-                      .stream()
+                  chunk.stream()
                       .mapToInt(
                           buffer -> {
                             return buffer.array().length + 1;

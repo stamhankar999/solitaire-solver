@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.jetbrains.annotations.NotNull;
@@ -18,18 +19,14 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Entry point to the solitaire solver. The application relies on a C* database with the schema
- * specified in misc/schema.cql pre-created. It also relies on the following topic to exist in
- * Kafka:
- *
- * <pre>
- * bin/kafka-topics --zookeeper localhost --create --topic solitaire --partitions 100 --replication-factor 1
- * </pre>
+ * specified in misc/schema.cql pre-created.
  */
 public class Main {
   private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
   @NotNull private final CassandraClient cassandra;
   @NotNull private final RedisClient redis;
   @NotNull private final AtomicBoolean stopped;
+  @NotNull private final CountDownLatch doneStopping;
 
   private Main(
       @NotNull String clientId,
@@ -39,6 +36,7 @@ public class Main {
     cassandra = new CassandraClient(clientId, cassandraSeed);
     redis = new RedisClient(clientId, redisTarget, maxBoardsInTask);
     stopped = new AtomicBoolean();
+    doneStopping = new CountDownLatch(1);
   }
 
   private void processBoard(
@@ -75,7 +73,7 @@ public class Main {
               return result;
             });
 
-    // Add child->parent mappings to C*, and add child tasks to Kafka.
+    // Add child->parent mappings to C*, and add child tasks to Redis.
     ByteBuffer canonicalState = ByteBuffer.wrap(b.getState().toByteArray());
     if (children != null) {
       for (ByteBuffer child : children) {
@@ -103,6 +101,7 @@ public class Main {
       task.clear();
       Context taskTimer = metrics.start("totalTime");
       ByteBuffer rawTask = metrics.measure("taskPull", () -> redis.nextTask(task));
+      int maxLevel = 0;
       if (rawTask == null) {
         // No task found. Loop around and try again.
         continue;
@@ -121,10 +120,10 @@ public class Main {
       for (Map.Entry<Board, Boolean> entry : boardExists.entrySet()) {
         Board board = entry.getKey();
         Boolean exists = entry.getValue();
+        maxLevel = Math.max(board.getLevel(), maxLevel);
         if (exists) {
-          LOGGER.info(
-              "Encountered board that has already been processed at level {}!", board.getLevel());
           metrics.measure("redis.prep", () -> redisWriter.completed(board, true));
+          metrics.incrBy("alreadySeen", 1);
         } else {
           processBoard(board, metrics, redisWriter, cassFutures);
           metrics.measure("redis.prep", () -> redisWriter.completed(board, false));
@@ -144,11 +143,16 @@ public class Main {
       // We're done with this task. Stop its timer.
       taskTimer.stop();
 
+      // Record the max-level seen in the metrics.
+      metrics.incrBy("maxLevel", maxLevel);
+
       // Log the final stats.
       if (LOGGER.isInfoEnabled()) {
         LOGGER.info(metrics.toString());
       }
     }
+    doneStopping.countDown();
+    LOGGER.info("Application is gracefully shutting down.");
   }
 
   private void close() {
@@ -162,6 +166,11 @@ public class Main {
 
   private void stop() {
     stopped.set(true);
+    try {
+      doneStopping.await();
+    } catch (InterruptedException e) {
+      LOGGER.warn("Interrupted while waiting for graceful shutdown!");
+    }
   }
 
   public static void main(String[] args) throws ExecutionException, InterruptedException {
