@@ -4,6 +4,8 @@ echo "working"
 lrange working 0 99
 echo "completed"
 hgetall completed
+echo "error"
+lrange error 0 99
 echo "level_stats"
 hgetall level_stats
 echo "client_stats"

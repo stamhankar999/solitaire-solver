@@ -4,6 +4,8 @@ echo "working"
 llen working
 echo "completed"
 hlen completed
+echo "error"
+llen error
 echo "level_stats"
 hgetall level_stats
 echo "client_stats"

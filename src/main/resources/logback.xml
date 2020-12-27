@@ -1,5 +1,15 @@
 <configuration>
 
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>WARN</level>
+    </filter>
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
     <!-- encoders are assigned the type
          ch.qos.logback.classic.encoder.PatternLayoutEncoder by default -->
@@ -10,8 +20,10 @@
 
   <root level="warn">
     <appender-ref ref="STDOUT" />
+    <appender-ref ref="STDERR" />
   </root>
   <logger name="com.svtlabs" level="debug" additivity="false">
     <appender-ref ref="STDOUT" />
+    <appender-ref ref="STDERR" />
   </logger>
 </configuration>
