@@ -26,12 +26,14 @@ public class RedisClient {
   private static byte[] PENDING;
   private static byte[] WORKING;
   private static byte[] COMPLETED;
+  private static byte[] ERROR;
 
   static {
     try {
       PENDING = "pending".getBytes(Protocol.CHARSET);
       WORKING = "working".getBytes(Protocol.CHARSET);
       COMPLETED = "completed".getBytes(Protocol.CHARSET);
+      ERROR = "error".getBytes(Protocol.CHARSET);
     } catch (UnsupportedEncodingException e) {
       // This should never happen.
       e.printStackTrace();
@@ -43,6 +45,7 @@ public class RedisClient {
   private final String clientId;
   private final UdsJedisFactory jedisFactory;
   private final Jedis jedis;
+  private final Jedis errorJedis;
   private final int maxBoardsInTask;
 
   /** This constructor is only used in small programs that create an initial task. */
@@ -56,10 +59,12 @@ public class RedisClient {
       // This is a pipe path.
       jedisFactory = new UdsJedisFactory(connectString);
       jedis = jedisFactory.create();
+      errorJedis = jedisFactory.create();
     } else {
       // This must be a hostname / ip.
       jedisFactory = null;
       jedis = new Jedis(connectString);
+      errorJedis = new Jedis(connectString);
     }
     this.maxBoardsInTask = maxBoardsInTask;
   }
@@ -72,6 +77,12 @@ public class RedisClient {
 
   public void addTask(@NotNull BitSet stateBytes) {
     addTask(ByteBuffer.wrap(stateBytes.toByteArray()));
+  }
+
+  public synchronized void error(@NotNull BitSet stateBytes) {
+    // This method is marked synchronized because multiple C* handler threads may call this at
+    // the same time to record errors.
+    errorJedis.rpush(ERROR, stateBytes.toByteArray());
   }
 
   public Map<Board, Boolean> checkExistence(List<Board> task) {
@@ -136,10 +147,6 @@ public class RedisClient {
     }
 
     public void completed(Board board, boolean alreadyCompleted) {
-      // TODO: For statistical updates, it shouldn't add the command to the pipeline,
-      // but rather accumulate in member counters. Then execute should do the
-      // appropriate
-      // incrBy's.
       byte[] boardState = board.getState().toByteArray();
       if (alreadyCompleted) {
         int stat = alreadySeenStats.getOrDefault(board.getLevel(), 0);
