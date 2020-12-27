@@ -110,12 +110,12 @@ public class Main {
       List<Board> task = new ArrayList<>();
       long lastLogTime = 0L;
       int numTasks = 0;
+      int maxLevel = 0;
       while (!stopped.get()) {
         task.clear();
         numTasks++;
         Context taskTimer = metrics.start("totalTime");
         ByteBuffer rawTask = metrics.measure("taskPull", () -> redis.nextTask(task));
-        int maxLevel = 0;
         if (rawTask == null) {
           // No task found. Loop around and try again.
           continue;
@@ -162,6 +162,15 @@ public class Main {
             numTasks = 0;
           }
         }
+      }
+
+      if (LOGGER.isInfoEnabled()) {
+        // Record the max-level seen in the metrics, and the current number of outstanding C*
+        // updates.
+        metrics.incrBy("maxLevel", maxLevel);
+        metrics.incrBy("cass.inProgress", cassInProgress.get());
+        metrics.incrBy("numTasks", numTasks);
+        LOGGER.info(metrics.toString());
       }
 
       LOGGER.info("Application is preparing to shut down.");
