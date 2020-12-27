@@ -25,10 +25,8 @@ class CassandraClient {
 
   private final CqlSession session;
   private final Semaphore asyncRequestSemaphore;
-  private final String clientId;
 
-  CassandraClient(@NotNull String clientId, @NotNull String seed) {
-    this.clientId = clientId;
+  CassandraClient(@NotNull String seed) {
 
     // Connect to C*.
 

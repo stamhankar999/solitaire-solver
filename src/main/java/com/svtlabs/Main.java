@@ -36,7 +36,7 @@ public class Main {
       @NotNull String redisTarget,
       @NotNull String cassandraSeed,
       int maxBoardsInTask) {
-    cassandra = new CassandraClient(clientId, cassandraSeed);
+    cassandra = new CassandraClient(cassandraSeed);
     redis = new RedisClient(clientId, redisTarget, maxBoardsInTask);
     stopped = new AtomicBoolean();
     doneStopping = new CountDownLatch(1);
