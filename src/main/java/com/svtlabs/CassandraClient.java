@@ -2,7 +2,6 @@ package com.svtlabs;
 
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.CqlSessionBuilder;
-import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.BoundStatementBuilder;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
@@ -31,13 +30,7 @@ class CassandraClient {
     // Connect to C*.
 
     session = new CqlSessionBuilder().addContactPoint(new InetSocketAddress(seed, 9042)).build();
-    asyncRequestSemaphore =
-        new Semaphore(
-            session
-                .getContext()
-                .getConfig()
-                .getDefaultProfile()
-                .getInt(DefaultDriverOption.CONNECTION_MAX_REQUESTS));
+    asyncRequestSemaphore = new Semaphore(128);
     insertWinningBoardStatement =
         session.prepare("INSERT INTO solitaire.winning_boards (state) VALUES (:state)");
     insertRelationStatement =
