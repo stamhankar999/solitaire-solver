@@ -49,6 +49,11 @@ public class Board implements Iterable<Board> {
     return Objects.hash(state);
   }
 
+  @Override
+  public String toString() {
+    return "state=" + Util.bytesToHex(state.toByteArray());
+  }
+
   @NotNull
   public BitSet getState() {
     return state;

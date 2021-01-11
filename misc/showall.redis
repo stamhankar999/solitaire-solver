@@ -4,6 +4,8 @@ echo "working"
 lrange working 0 99
 echo "completed"
 hgetall completed
+echo "pending_boards"
+smembers pending_boards
 echo "error"
 lrange error 0 99
 echo "level_stats"

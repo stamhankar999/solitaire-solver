@@ -84,7 +84,9 @@ public class Main {
               return result;
             });
 
-    // Add child->parent mappings to C*, and add child tasks to Redis.
+    // Add child->parent mappings to C*, and add children as potential task fragments (since N
+    // boards make a task) in Redis. We say "potential" here because some of these boards may
+    // already be registered in tasks to process.
     ByteBuffer canonicalState = ByteBuffer.wrap(b.getState().toByteArray());
     if (children != null) {
       for (ByteBuffer child : children) {
@@ -92,7 +94,7 @@ public class Main {
         metrics.measure(
             "cass.prep",
             () -> processCassStage(b, cassandra.addBoardRelation(child, canonicalState)));
-        metrics.measure("redis.prep", () -> redisWriter.addTask(child));
+        metrics.measure("redis.prep", () -> redisWriter.addPotentialChildTaskFragment(child));
       }
     }
   }
@@ -124,9 +126,11 @@ public class Main {
         // Save a metric for the number of boards in this task.
         metrics.incrBy("numBoards", task.size());
 
+        LOGGER.debug("Task boards: {}", task);
+
         // Check if these boards have been previously processed.
         Map<Board, Boolean> boardExists =
-            metrics.measure("boardsCheck", () -> redis.checkExistence(task));
+            metrics.measure("boardsCheck", () -> redis.checkCompletedBoards(task));
 
         BatchWriter redisWriter = redis.createBatchWriter();
         for (Map.Entry<Board, Boolean> entry : boardExists.entrySet()) {

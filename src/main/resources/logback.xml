@@ -22,7 +22,7 @@
     <appender-ref ref="STDOUT" />
     <appender-ref ref="STDERR" />
   </root>
-  <logger name="com.svtlabs" level="debug" additivity="false">
+  <logger name="com.svtlabs" level="info" additivity="false">
     <appender-ref ref="STDOUT" />
     <appender-ref ref="STDERR" />
   </logger>

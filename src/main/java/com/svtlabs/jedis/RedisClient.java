@@ -4,15 +4,19 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.svtlabs.Board;
 import com.svtlabs.Metrics;
+import com.svtlabs.Util;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,17 +27,19 @@ import redis.clients.jedis.Response;
 
 public class RedisClient {
   private static final Logger LOGGER = LoggerFactory.getLogger(RedisClient.class);
-  private static byte[] PENDING;
+  private static byte[] PENDING_TASKS;
   private static byte[] WORKING;
   private static byte[] COMPLETED;
   private static byte[] ERROR;
+  private static byte[] PENDING_BOARDS;
 
   static {
     try {
-      PENDING = "pending".getBytes(Protocol.CHARSET);
+      PENDING_TASKS = "pending".getBytes(Protocol.CHARSET);
       WORKING = "working".getBytes(Protocol.CHARSET);
       COMPLETED = "completed".getBytes(Protocol.CHARSET);
       ERROR = "error".getBytes(Protocol.CHARSET);
+      PENDING_BOARDS = "pending_boards".getBytes(Protocol.CHARSET);
     } catch (UnsupportedEncodingException e) {
       // This should never happen.
       e.printStackTrace();
@@ -45,6 +51,7 @@ public class RedisClient {
   private final String clientId;
   private final UdsJedisFactory jedisFactory;
   private final Jedis jedis;
+  private final Jedis jedis2;
   private final Jedis errorJedis;
   private final int maxBoardsInTask;
 
@@ -59,11 +66,13 @@ public class RedisClient {
       // This is a pipe path.
       jedisFactory = new UdsJedisFactory(connectString);
       jedis = jedisFactory.create();
+      jedis2 = jedisFactory.create();
       errorJedis = jedisFactory.create();
     } else {
       // This must be a hostname / ip.
       jedisFactory = null;
       jedis = new Jedis(connectString);
+      jedis2 = new Jedis(connectString);
       errorJedis = new Jedis(connectString);
     }
     this.maxBoardsInTask = maxBoardsInTask;
@@ -71,7 +80,7 @@ public class RedisClient {
 
   public void addTask(@NotNull ByteBuffer stateBytes) {
     BatchWriter batchWriter = createBatchWriter();
-    batchWriter.addTask(stateBytes);
+    batchWriter.addPotentialChildTaskFragment(stateBytes);
     batchWriter.execute(new Metrics(), null);
   }
 
@@ -80,15 +89,15 @@ public class RedisClient {
   }
 
   public synchronized void error(@NotNull BitSet stateBytes) {
-    // This method is marked synchronized because multiple C* handler threads may call this at
-    // the same time to record errors.
+    // This method is marked synchronized because multiple C* handler threads may
+    // call this at the same time to record errors.
     errorJedis.rpush(ERROR, stateBytes.toByteArray());
   }
 
-  public Map<Board, Boolean> checkExistence(List<Board> task) {
+  public Map<Board, Boolean> checkCompletedBoards(Collection<Board> boards) {
     Map<Board, Response<Boolean>> results = new LinkedHashMap<>();
     Pipeline pipeline = jedis.pipelined();
-    task.forEach(b -> results.put(b, pipeline.hexists(COMPLETED, b.getState().toByteArray())));
+    boards.forEach(b -> results.put(b, pipeline.hexists(COMPLETED, b.getState().toByteArray())));
     pipeline.sync();
 
     return Maps.transformValues(results, Response::get);
@@ -99,7 +108,7 @@ public class RedisClient {
   }
 
   public ByteBuffer nextTask(List<Board> boards) {
-    byte[] task = jedis.brpoplpush(PENDING, WORKING, POLL_TIMEOUT);
+    byte[] task = jedis.brpoplpush(PENDING_TASKS, WORKING, POLL_TIMEOUT);
     if (task == null) {
       return null;
     }
@@ -121,13 +130,15 @@ public class RedisClient {
   }
 
   public BatchWriter createBatchWriter() {
-    return new BatchWriter(clientId, jedis, maxBoardsInTask);
+    return new BatchWriter(clientId, jedis, jedis2, maxBoardsInTask);
   }
 
   public static class BatchWriter {
+    private static final Logger LOGGER = LoggerFactory.getLogger(BatchWriter.class);
     private static final String CLIENT_STATS = "client_stats";
     private static final String LEVEL_STATS = "level_stats";
     private static final String ALREADY_SEEN_STATS = "already_seen_stats";
+    private final Jedis jedis2;
     private final String clientId;
     private final Pipeline pipeline;
     private final Set<ByteBuffer> newBoards;
@@ -136,7 +147,8 @@ public class RedisClient {
     private final Map<Integer, Integer> alreadySeenStats;
     private int totalCompleted;
 
-    public BatchWriter(String clientId, Jedis jedis, int maxBoardsInTask) {
+    public BatchWriter(String clientId, Jedis jedis, Jedis jedis2, int maxBoardsInTask) {
+      this.jedis2 = jedis2;
       levelStats = new HashMap<>();
       alreadySeenStats = new HashMap<>();
       this.clientId = clientId;
@@ -154,6 +166,7 @@ public class RedisClient {
       } else {
         try {
           pipeline.hset(COMPLETED, boardState, clientId.getBytes(Protocol.CHARSET));
+          pipeline.srem(PENDING_BOARDS, boardState);
         } catch (UnsupportedEncodingException e) {
           // This should never happen.
           e.printStackTrace();
@@ -166,6 +179,10 @@ public class RedisClient {
     }
 
     public void execute(Metrics metrics, ByteBuffer rawTask) {
+      Map<ByteBuffer, Boolean> foundPendingBoards =
+          metrics.measure("redis.checkPendingBoards", () -> checkPendingBoards(newBoards));
+      metrics.incrBy(
+          "numExistingChildBoards", foundPendingBoards.values().stream().filter(b -> b).count());
       metrics.measure(
           "redis.prep",
           () -> {
@@ -174,8 +191,40 @@ public class RedisClient {
               pipeline.lrem(WORKING, 1, rawTask.array());
             }
 
+            if (LOGGER.isDebugEnabled()) {
+              LOGGER.debug(
+                  "Candidate boards to investigate next:\n{}",
+                  newBoards.stream()
+                      .map(buf -> Util.bytesToHex(buf.array()))
+                      .collect(Collectors.joining("\n")));
+            }
+            // Convert foundPendingBoards map to list of boards that aren't already pending.
+            List<ByteBuffer> newPendingBoards =
+                foundPendingBoards.entrySet().stream()
+                    .filter(e -> !e.getValue())
+                    .map(e -> e.getKey())
+                    .collect(Collectors.toList());
+
+            if (LOGGER.isDebugEnabled()) {
+              LOGGER.debug(
+                  "foundPendingBoards mapping:\n{}",
+                  foundPendingBoards.entrySet().stream()
+                      .map(e -> Util.bytesToHex(e.getKey().array()) + ": " + e.getValue())
+                      .collect(Collectors.joining("\n")));
+            }
+
+            if (LOGGER.isDebugEnabled()) {
+              LOGGER.debug(
+                  "Filtered boards to investigate next:\n{}",
+                  newPendingBoards.stream()
+                      .map(buf -> Util.bytesToHex(buf.array()))
+                      .collect(Collectors.joining("\n")));
+            }
+
             // Coalesce the new boards into groups of X to create multi-board task(s).
-            Iterable<List<ByteBuffer>> groups = Iterables.partition(newBoards, maxBoardsInTask);
+            Iterable<List<ByteBuffer>> groups =
+                Iterables.partition(newPendingBoards, maxBoardsInTask);
+            List<byte[]> newTasks = new ArrayList<byte[]>();
             for (List<ByteBuffer> chunk : groups) {
               // Walk through the chunk to get the byte lengths of each buffer, to find out
               // how many
@@ -193,8 +242,20 @@ public class RedisClient {
                     task.put((byte) buffer.array().length);
                     task.put(buffer);
                   });
-              pipeline.lpush(PENDING, task.array());
+              newTasks.add(task.array());
             }
+            if (!newTasks.isEmpty()) {
+              pipeline.lpush(PENDING_TASKS, newTasks.toArray(new byte[1][]));
+            }
+
+            // Add the new boards to the pending-boards set.
+            if (!newPendingBoards.isEmpty()) {
+              List<byte[]> newPendingBoardsArray =
+                  newPendingBoards.stream().map(ByteBuffer::array).collect(Collectors.toList());
+              pipeline.sadd(PENDING_BOARDS, newPendingBoardsArray.toArray(new byte[1][]));
+            }
+
+            // Update stats.
             levelStats.forEach(
                 (level, count) -> pipeline.hincrBy(LEVEL_STATS, String.valueOf(level), count));
             alreadySeenStats.forEach(
@@ -206,8 +267,17 @@ public class RedisClient {
       metrics.measure("redis.update", () -> pipeline.sync());
     }
 
-    public void addTask(ByteBuffer child) {
+    public void addPotentialChildTaskFragment(ByteBuffer child) {
       newBoards.add(child);
+    }
+
+    private Map<ByteBuffer, Boolean> checkPendingBoards(Collection<ByteBuffer> boards) {
+      Map<ByteBuffer, Response<Boolean>> results = new LinkedHashMap<>();
+      Pipeline pipeline = jedis2.pipelined();
+      boards.forEach(b -> results.put(b, pipeline.sismember(PENDING_BOARDS, b.array())));
+      pipeline.sync();
+
+      return Maps.transformValues(results, Response::get);
     }
   }
 }

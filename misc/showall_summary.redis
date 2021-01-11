@@ -4,6 +4,8 @@ echo "working"
 llen working
 echo "completed"
 hlen completed
+echo "pending_boards"
+scard pending_boards
 echo "error"
 llen error
 echo "level_stats"
